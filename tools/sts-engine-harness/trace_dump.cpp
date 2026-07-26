@@ -403,6 +403,35 @@ int main() {
         CardId::THINKING_AHEAD, CardId::TRUE_GRIT, CardId::WARCRY,
     };
 
+    // Batch 5 — the card-lifecycle batch: exhaust triggers, status-card creation,
+    // ethereal, innate placement.
+    //
+    // RECKLESS_CHARGE appears TWICE on purpose. It is the only registered source of DAZED,
+    // and DAZED is both unplayable (so it *stays* in hand until end of turn) and ethereal
+    // (so it is what exercises discardAtEndOfTurn's descending-index exhaust ordering).
+    // One copy yields at most one Dazed per reshuffle cycle, which rarely puts two ethereal
+    // cards in hand at the same turn end; two copies make that routine. It also doubles the
+    // sample for MakeTempCardInDrawPile's cardRandomRng draw.
+    //
+    // MIND_BLAST is deliberately ABSENT from the FULL deck even though innate placement now
+    // works. Its damage is the draw pile's size and it is innate, so with the 85-card deck it
+    // would sit in every trace's opening hand and hit for ~80 — one-shotting Cultist (48-54)
+    // and Jaw Worm (40-44) on turn 1 and collapsing 1230 traces from ~40 steps to 1. It lives
+    // in the focused variant below instead, where the draw pile is ~18.
+    const std::vector<CardId> BATCH_5 {
+        // exhaust triggers
+        CardId::DARK_EMBRACE, CardId::FEEL_NO_PAIN,
+        // status-card creation (discard / draw pile / hand)
+        CardId::IMMOLATE, CardId::RECKLESS_CHARGE, CardId::RECKLESS_CHARGE,
+        CardId::WILD_STRIKE, CardId::POWER_THROUGH,
+        // ethereal
+        CardId::CARNAGE, CardId::GHOSTLY_ARMOR,
+        // innate (DRAMATIC_ENTRANCE always, BRUTALITY only when upgraded)
+        CardId::DRAMATIC_ENTRANCE, CardId::BRUTALITY,
+        // triggers on drawing a status card
+        CardId::EVOLVE,
+    };
+
     // ---- DECK CAP: Deck::MAX_SIZE (96), not CardManager::MAX_GROUP_SIZE (64) ------
     //
     // The three combat piles are NOT the constraint, even though CardManager::init does
@@ -431,7 +460,7 @@ int main() {
     // byte-for-byte.
     std::vector<DeckVariant> variants { {BATCH_1, seeds.size(), false} };
     {
-        // Variants 1/2 carry the CURRENT FULL DECK (10 starter + batches 1-4 = 73 cards).
+        // Variants 1/2 carry the CURRENT FULL DECK (10 starter + batches 1-5 = 85 cards).
         // Each new batch REPLACES this pair instead of appending another one: a pair costs
         // ~12MB, so appending would put the repo past 100MB within a few batches. The deck
         // being a superset of every registered card is also what makes one pair enough.
@@ -445,8 +474,29 @@ int main() {
         full.insert(full.end(), BATCH_2.begin(), BATCH_2.end());
         full.insert(full.end(), BATCH_3.begin(), BATCH_3.end());
         full.insert(full.end(), BATCH_4.begin(), BATCH_4.end());
+        full.insert(full.end(), BATCH_5.begin(), BATCH_5.end());
         variants.push_back({full, 40, false});
         variants.push_back({full, 40, true});
+
+        // Variants 3/4: a FOCUSED small deck (10 starter + batch 5 + MIND_BLAST = 23 cards).
+        //
+        // Two branches of batch 5 are simply unreachable at 85 cards, and both come down to
+        // the draw pile never cycling in a single battle:
+        //
+        //  * BURN's end-of-turn self-damage. Immolate drops Burn in the DISCARD pile, so it
+        //    only reaches hand after a reshuffle. Measured on the 85-card data: Burn appears
+        //    296 times in the discard pile, 44 in the draw pile, and 0 times in hand — the
+        //    whole useNoTriggerCard path had zero oracle behind it.
+        //  * MIND_BLAST, whose damage scales with the draw pile (see above).
+        //
+        // At 23 cards a reshuffle happens every few turns and Mind Blast hits for ~18. This is
+        // the "覆盖密度" escape hatch the engine repo's WORKFLOW describes: variants 1/2 stay
+        // the current full deck (they are what proves cards coexist), and a focused pair is
+        // added only when the full deck makes a branch unreachable.
+        std::vector<CardId> focused = BATCH_5;
+        focused.push_back(CardId::MIND_BLAST);
+        variants.push_back({focused, 40, false});
+        variants.push_back({focused, 40, true});
     }
     for (const auto &v : variants) {
         // 10 starter cards are added by the GameContext constructor.

@@ -699,6 +699,22 @@ void BattleContext::clearPostCombatActions() {
         }
         ++curIdx;
     }
+
+    // sts-engine patch: `back` must follow the compaction.
+    //
+    // Without this, the ring buffer is left inconsistent: the surviving actions sit in
+    // [front, placeIdx) and `size` counts them correctly, but `back` still points past the
+    // *old* end. The next pushBack therefore writes at that stale slot while popFront keeps
+    // walking up from `front` -- so it returns the leftover copy at placeIdx (an action that
+    // was already run or cleared) and the action just pushed is never reached.
+    //
+    // Reproducer: Fiend Fire + Dark Embrace, where an early AttackEnemy kills the last
+    // monster. clearPostCombatActions keeps only OnAfterCardUsed (clearOnCombatVictory =
+    // false); that action exhausts Fiend Fire itself, which addToBot's DrawCards(1). With the
+    // stale `back`, the pop returns a dead AttackEnemy instead and the draw silently vanishes.
+    // Only post-victory state differs (the real game throws that state away), but the trace
+    // dumper snapshots it, so it has to be a queue and not a corrupted one.
+    actionQueue.back = placeIdx; // pushBack normalises placeIdx == capacity on its own
 }
 
 void BattleContext::cleanCardQueue() {
