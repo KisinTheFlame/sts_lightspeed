@@ -21,6 +21,40 @@ clang++ -std=c++17 -O2 -w -Iinclude -I. tools/sts-engine-harness/trace_dump.cpp 
 
 (`${=SRCS}` is zsh word splitting; use `$SRCS` in bash.)
 
+## Deck variants: coverage is append-only
+
+Every trace records the deck it was generated with, and the replayer replays whatever
+each line states. So a new batch of registered cards does **not** require regenerating
+the existing ~23MB — it adds a deck variant, which only ever appends lines.
+
+`variants` in `main()`:
+
+| # | deck | seeds | upgraded |
+| - | ---- | ----- | -------- |
+| 0 | starter + `BATCH_1` | all 125 | no |
+| 1 | starter + `BATCH_1` + `BATCH_2` | first 40 | no |
+| 2 | starter + `BATCH_1` + `BATCH_2` | first 40 | yes |
+
+Two rules keep regeneration honest:
+
+- **Variant 0 stays first and unchanged.** `traceIdx` drives the relic/potion rotation,
+  so keeping variant 0's iteration order intact reproduces the committed files
+  byte-for-byte. Verify that after any change to this file: split the output and `cmp`
+  the five committed encounters before trusting the new lines.
+- **`deckUpgraded` is emitted only when something is upgraded**, so variant 0/1 lines
+  stay byte-identical to what was committed before that field existed. The TS side reads
+  `t.deckUpgraded?.[i] ?? false`.
+
+Variant 2 exists because the un-upgraded pass never exercises the `up ? x : y` branch of
+a card rule — that is half of every rule, and it was entirely unverified before. Only
+cards the reference says `canUpgrade()` get the flag: forcing it onto a card with no
+upgraded form would make the two sides disagree about its cost for a reason that has
+nothing to do with the card's rule.
+
+Adding a card to a variant's deck does not verify it — the policy plays the leftmost
+playable card, so a card can sit in a deck and never be exercised. Count actual plays
+per card after regenerating; 0 plays means a registered rule with no oracle behind it.
+
 ## Splitting into the engine repo layout
 
 The engine stores one JSONL file per encounter under `test/golden/traces/`:
@@ -28,8 +62,13 @@ The engine stores one JSONL file per encounter under `test/golden/traces/`:
 ```js
 const by = {};
 for (const t of JSON.parse(fs.readFileSync("traces.json","utf8")).traces) (by[t.encounter] ||= []).push(t);
+// TOTAL order, not merely stable: several variants share a (seed, floor), and leaning on
+// V8's sort stability would make byte-identical regeneration an implementation detail.
+const key = (t) => [t.seed, t.floor, t.deck.length, t.deckUpgraded === undefined ? 0 : 1];
 for (const [enc, list] of Object.entries(by)) {
-  list.sort((a,b) => a.seed === b.seed ? a.floor - b.floor : (a.seed < b.seed ? -1 : 1)); // stable => byte-identical regeneration
+  list.sort((a, b) => { const ka = key(a), kb = key(b);
+    for (let i = 0; i < ka.length; i++) if (ka[i] !== kb[i]) return ka[i] < kb[i] ? -1 : 1;
+    return 0; });
   fs.writeFileSync(`test/golden/traces/${enc.toLowerCase()}.jsonl`, list.map(t => JSON.stringify(t)).join("\n") + "\n");
 }
 ```

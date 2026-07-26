@@ -299,12 +299,52 @@ int main() {
 
     const int MAX_STEPS = 400;
 
+    // ---- deck variants -------------------------------------------------------
+    //
+    // Every trace records the deck it was generated with, so the replayer replays
+    // whatever each line states. That makes coverage APPEND-ONLY: a new batch of
+    // registered cards adds new variants instead of regenerating the existing 23MB.
+    //
+    // Variant 0 MUST stay first and unchanged — its traceIdx values (0..N) drive the
+    // relic/potion rotation, so keeping it first reproduces the committed files
+    // byte-for-byte. New variants continue the counter and only ever append lines.
+    //
+    // `upgradeAll` covers the other half of every card rule. The un-upgraded pass
+    // alone never exercises the `up ? x : y` branch, which is exactly where a
+    // transcription slip hides.
+    struct DeckVariant {
+        std::vector<CardId> extra;
+        size_t seedLimit;   // first N seeds only, to bound file growth
+        bool upgradeAll;
+    };
+
+    // Batch 1 (already registered, verified by the committed variant-0 traces).
+    const std::vector<CardId> BATCH_1 {
+        CardId::ANGER, CardId::CLEAVE, CardId::CLOTHESLINE, CardId::HEAVY_BLADE,
+        CardId::IRON_WAVE, CardId::POMMEL_STRIKE, CardId::SHRUG_IT_OFF,
+        CardId::THUNDERCLAP, CardId::TWIN_STRIKE, CardId::BODY_SLAM,
+        CardId::INFLAME,
+    };
+    // Batch 2 — fill in as cards get registered in CARD_RULES.
+    const std::vector<CardId> BATCH_2 {
+    };
+
+    std::vector<DeckVariant> variants { {BATCH_1, seeds.size(), false} };
+    if (!BATCH_2.empty()) {
+        std::vector<CardId> all = BATCH_1;
+        all.insert(all.end(), BATCH_2.begin(), BATCH_2.end());
+        variants.push_back({all, 40, false});
+        variants.push_back({all, 40, true});
+    }
+
     std::cout << "{" << q("traces") << ":[";
     bool firstTrace = true;
     size_t traceIdx = 0;
 
+    for (const auto &variant : variants) {
     for (const auto &enc : encounters) {
-        for (const auto &sd : seeds) {
+        for (size_t seedIdx = 0; seedIdx < seeds.size() && seedIdx < variant.seedLimit; ++seedIdx) {
+            const auto &sd = seeds[seedIdx];
             for (int floor : floors) {
                 GameContext gc(CharacterClass::IRONCLAD, sd.value, 0);
                 gc.floorNum = floor;
@@ -334,13 +374,14 @@ int main() {
 
                 // Richer deck so the traces exercise the newly registered cards, not just
                 // the starter three. Added deterministically (no RNG) before cards.init.
-                static const CardId EXTRA_CARDS[] {
-                    CardId::ANGER, CardId::CLEAVE, CardId::CLOTHESLINE, CardId::HEAVY_BLADE,
-                    CardId::IRON_WAVE, CardId::POMMEL_STRIKE, CardId::SHRUG_IT_OFF,
-                    CardId::THUNDERCLAP, CardId::TWIN_STRIKE, CardId::BODY_SLAM,
-                    CardId::INFLAME,
-                };
-                for (auto cid : EXTRA_CARDS) gc.deck.obtain(gc, Card(cid));
+                //
+                // Only upgrade what the reference itself says can be upgraded: forcing the
+                // flag onto a card with no upgraded form would make the two sides disagree
+                // about its cost for a reason that has nothing to do with the card's rule.
+                for (auto cid : variant.extra) {
+                    const bool up = variant.upgradeAll && Card(cid).canUpgrade();
+                    gc.deck.obtain(gc, Card(cid, up ? 1 : 0));
+                }
 
                 BattleContext bc;
                 bc.init(gc, enc.first);
@@ -375,8 +416,18 @@ int main() {
                           << "," << q("relics") << ":" << strArr(relicNames);
 
                 std::vector<std::string> deck;
-                for (int i = 0; i < gc.deck.size(); ++i) deck.push_back(getCardEnumName(gc.deck.cards[i].getId()));
+                std::vector<int> deckUpgraded;
+                bool anyUpgraded = false;
+                for (int i = 0; i < gc.deck.size(); ++i) {
+                    deck.push_back(getCardEnumName(gc.deck.cards[i].getId()));
+                    const bool up = gc.deck.cards[i].isUpgraded();
+                    deckUpgraded.push_back(up ? 1 : 0);
+                    anyUpgraded = anyUpgraded || up;
+                }
                 std::cout << "," << q("deck") << ":" << strArr(deck);
+                // Emitted only when it carries information, so an all-un-upgraded variant's
+                // lines stay byte-identical to what was committed before this field existed.
+                if (anyUpgraded) std::cout << "," << q("deckUpgraded") << ":" << arr(deckUpgraded);
 
                 std::cout << "," << q("initial") << ":" << snapshot(bc);
                 std::cout << "," << q("steps") << ":[";
@@ -432,6 +483,7 @@ int main() {
                 std::cout << "]}";
             }
         }
+    }
     }
 
     std::cout << "]}" << std::endl;
