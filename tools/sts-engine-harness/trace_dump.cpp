@@ -46,6 +46,30 @@ static std::string strArr(const std::vector<std::string> &v) {
 
 // ---------------------------------------------------------------- snapshots
 
+// Amount of one player status, avoiding getStatusRuntime's throw on bool-only statuses.
+//
+// BARRICADE / CORRUPTION / CONFUSED / PEN_NIB / SURROUNDED / BLASPHEMER / ELECTRO /
+// MASTER_REALITY / WRATH_NEXT_TURN are applied via setHasStatus, which only flips a bit
+// in statusBits and NEVER writes statusMap (Player.h:233). getStatusRuntime's default
+// branch then does statusMap.at(s) on a missing key and throws std::out_of_range — so
+// dumping a snapshot with Barricade up would abort the whole run.
+//
+// Report those as 1, which is what the engine side stores for a bool status.
+static int playerStatusValue(const Player &p, PlayerStatus s) {
+    switch (s) {
+        // These four live in their own int fields and are not in statusMap at all.
+        case PlayerStatus::ARTIFACT:
+        case PlayerStatus::DEXTERITY:
+        case PlayerStatus::FOCUS:
+        case PlayerStatus::STRENGTH:
+            return p.getStatusRuntime(s);
+        default:
+            break;
+    }
+    const auto it = p.statusMap.find(s);
+    return it == p.statusMap.end() ? 1 : it->second;
+}
+
 // Every non-zero player status, as {"NAME": amount}.
 static std::string playerStatuses(const Player &p) {
     std::ostringstream os;
@@ -54,7 +78,7 @@ static std::string playerStatuses(const Player &p) {
     for (int i = 0; i < static_cast<int>(PlayerStatus::THE_BOMB) + 1; ++i) {
         const auto s = static_cast<PlayerStatus>(i);
         if (!p.hasStatusRuntime(s)) continue;
-        const int v = p.getStatusRuntime(s);
+        const int v = playerStatusValue(p, s);
         if (v == 0) continue;
         if (!first) os << ",";
         first = false;
@@ -341,12 +365,25 @@ int main() {
         CardId::BERSERK,
     };
 
+    // Batch 3 — the 12 cards the turn-boundary Power framework unlocked.
+    const std::vector<CardId> BATCH_3 {
+        CardId::UPPERCUT, CardId::BATTLE_TRANCE, CardId::DISARM, CardId::FLEX,
+        CardId::IMPATIENCE, CardId::LIMIT_BREAK, CardId::SEEING_RED, CardId::TRIP,
+        CardId::BARRICADE, CardId::COMBUST, CardId::DEMON_FORM, CardId::METALLICIZE,
+    };
+
+    // Variants 1/2 carry the CURRENT full deck and are REPLACED each batch, not stacked.
+    // A later batch's deck is a superset of the earlier one's, so one pair subsumes them
+    // all; appending a pair per batch would re-verify the same cards at ~20MB a round.
     std::vector<DeckVariant> variants { {BATCH_1, seeds.size(), false} };
-    if (!BATCH_2.empty()) {
+    {
         std::vector<CardId> all = BATCH_1;
         all.insert(all.end(), BATCH_2.begin(), BATCH_2.end());
-        variants.push_back({all, 40, false});
-        variants.push_back({all, 40, true});
+        all.insert(all.end(), BATCH_3.begin(), BATCH_3.end());
+        if (all.size() > BATCH_1.size()) {
+            variants.push_back({all, 40, false});
+            variants.push_back({all, 40, true});
+        }
     }
 
     std::cout << "{" << q("traces") << ":[";
