@@ -325,8 +325,20 @@ int main() {
         CardId::THUNDERCLAP, CardId::TWIN_STRIKE, CardId::BODY_SLAM,
         CardId::INFLAME,
     };
-    // Batch 2 — fill in as cards get registered in CARD_RULES.
+    // Batch 2 — the 29 cards registered in CARD_RULES alongside BATCH_1.
     const std::vector<CardId> BATCH_2 {
+        // attacks
+        CardId::BITE, CardId::BLUDGEON, CardId::DROPKICK, CardId::FEED,
+        CardId::FIEND_FIRE, CardId::FLASH_OF_STEEL, CardId::HEMOKINESIS,
+        CardId::PUMMEL, CardId::REAPER, CardId::SEVER_SOUL,
+        CardId::SWORD_BOOMERANG, CardId::SWIFT_STRIKE,
+        // skills
+        CardId::BANDAGE_UP, CardId::BLIND, CardId::BLOODLETTING, CardId::DEEP_BREATH,
+        CardId::ENTRENCH, CardId::FINESSE, CardId::GOOD_INSTINCTS, CardId::IMPERVIOUS,
+        CardId::INTIMIDATE, CardId::JAX, CardId::MASTER_OF_STRATEGY, CardId::OFFERING,
+        CardId::PANACEA, CardId::SECOND_WIND, CardId::SHOCKWAVE, CardId::SPOT_WEAKNESS,
+        // powers
+        CardId::BERSERK,
     };
 
     std::vector<DeckVariant> variants { {BATCH_1, seeds.size(), false} };
