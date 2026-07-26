@@ -12,6 +12,7 @@
 //   SRCS=$(find src -name '*.cpp' ! -name 'SaveFile.cpp' | tr '\n' ' ')
 //   clang++ -std=c++17 -O2 -w -Iinclude -I. /tmp/stsprobe/trace_dump.cpp ${=SRCS} -o /tmp/stsprobe/trace_dump
 
+#include <algorithm>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -232,11 +233,28 @@ static bool pickCardSelectAction(const BattleContext &bc, Step &out) {
             out = {"select_card", a.getSelectIdx(), -1};
             return true;
         }
-        // Multi-select carries a list; the trace format records the chosen indices
-        // verbatim in `idxs` rather than a single idx.
+
+        // Multi-select: fill the picks ourselves rather than taking the enumerator's
+        // offering.
+        //
+        // enumerateCardSelectActions only ever emits ONE multi action — the empty
+        // selection (`Action(MULTI_CARD_SELECT, 0)`, whose bitmask has no bits set), with
+        // the comment "just dont deal with this right now". Replaying that alone means
+        // BattleContext::chooseExhaustCards never runs with a non-empty list, so Purity's
+        // actual effect would have no oracle behind it at all.
+        //
+        // The enumerator is only a search helper; the oracle is BattleContext. So pick the
+        // lowest `pickCount` hand indices, which isValidMultiCardSelectAction accepts and
+        // Action::execute feeds straight into the real chooseExhaustCards.
+        const int take = std::min(bc.cardSelectInfo.pickCount, bc.cards.cardsInHand);
+        search::Action filled(a.bits);
+        for (int i = 0; i < take; ++i) filled = search::Action(filled.bits | (1u << i));
+        if (!filled.isValidAction(bc)) continue;
+
+        // The trace format records the chosen indices verbatim in `idxs`.
         out = {"select_cards", -1, -1};
         out.idxs.clear();
-        for (int i : a.getSelectedIdxs()) out.idxs.push_back(i);
+        for (int i : filled.getSelectedIdxs()) out.idxs.push_back(i);
         return true;
     }
     return false;
@@ -372,17 +390,58 @@ int main() {
         CardId::BARRICADE, CardId::COMBUST, CardId::DEMON_FORM, CardId::METALLICIZE,
     };
 
-    // Variants 1/2 carry the CURRENT full deck and are REPLACED each batch, not stacked.
-    // A later batch's deck is a superset of the earlier one's, so one pair subsumes them
-    // all; appending a pair per batch would re-verify the same cards at ~20MB a round.
+    // Batch 4 — the 10 cards the card-select screen unlocked.
+    //
+    // EXHUME appears TWICE on purpose. ExhumeAction filters the exhaust pile down to
+    // non-Exhume cards, and Exhume exhausts itself — but only in OnAfterCardUsed, which
+    // runs after ExhumeAction. With a single copy, no Exhume is ever in the pile while
+    // ExhumeAction is looking at it, so that filter is unreachable and a transcription
+    // slip in it would go unnoticed. A second copy makes it reachable.
+    const std::vector<CardId> BATCH_4 {
+        CardId::ARMAMENTS, CardId::BURNING_PACT, CardId::EXHUME, CardId::EXHUME,
+        CardId::HEADBUTT, CardId::PURITY, CardId::SECRET_TECHNIQUE, CardId::SECRET_WEAPON,
+        CardId::THINKING_AHEAD, CardId::TRUE_GRIT, CardId::WARCRY,
+    };
+
+    // ---- HARD CAP: a deck may not exceed CardManager::MAX_GROUP_SIZE (64) ---------
+    //
+    // CardManager::init does `drawPile.resize(gc.deck.size())` and fixed_list has NO
+    // bounds checking whatsoever (fixed_list.h: `void resize(int size) { list_size = size; }`),
+    // so a deck of 65+ writes straight past a std::array<CardInstance,64> — silent memory
+    // corruption, not an assert. Variants 1/2 sit at 62 (10 starter + batches 1-3), i.e. two
+    // slots from the edge, so batch 4 could NOT be folded into them.
+    //
+    // Hence variants are no longer "one pair carrying the current full deck". Each pair
+    // carries the starter deck + batch 1 (for pile variety among already-verified cards)
+    // + the batch being introduced. Earlier pairs stay byte-identical, so the committed
+    // data keeps its prefix guarantee and tools/regen-traces.sh's reproducibility check
+    // keeps working.
+    //
+    // Variant 0 MUST stay first and unchanged — its traceIdx values (0..N) drive the
+    // relic/potion rotation. New pairs are appended, so they only ever add lines.
     std::vector<DeckVariant> variants { {BATCH_1, seeds.size(), false} };
     {
-        std::vector<CardId> all = BATCH_1;
-        all.insert(all.end(), BATCH_2.begin(), BATCH_2.end());
-        all.insert(all.end(), BATCH_3.begin(), BATCH_3.end());
-        if (all.size() > BATCH_1.size()) {
-            variants.push_back({all, 40, false});
-            variants.push_back({all, 40, true});
+        // Variants 1/2 (62 cards): batches 1-3. Frozen — do NOT extend, see the cap above.
+        std::vector<CardId> b123 = BATCH_1;
+        b123.insert(b123.end(), BATCH_2.begin(), BATCH_2.end());
+        b123.insert(b123.end(), BATCH_3.begin(), BATCH_3.end());
+        variants.push_back({b123, 40, false});
+        variants.push_back({b123, 40, true});
+
+        // Variants 3/4 (31 cards): batch 1 + batch 4. Fewer seeds than the pair above
+        // because a card-select screen costs an extra step per open and the files are
+        // already ~50MB; 20 seeds x 3 floors x 20 encounters is still 1200 traces a pass.
+        std::vector<CardId> b14 = BATCH_1;
+        b14.insert(b14.end(), BATCH_4.begin(), BATCH_4.end());
+        variants.push_back({b14, 20, false});
+        variants.push_back({b14, 20, true});
+    }
+    for (const auto &v : variants) {
+        // 10 starter cards are added by the GameContext constructor.
+        if (v.extra.size() + 10 > 64) {
+            std::cerr << "deck variant exceeds CardManager::MAX_GROUP_SIZE (64): "
+                      << (v.extra.size() + 10) << " cards" << std::endl;
+            return 1;
         }
     }
 
