@@ -54,6 +54,15 @@ nothing to do with the card's rule.
 Adding a card to a variant's deck does not verify it — the policy plays the leftmost
 playable card, so a card can sit in a deck and never be exercised. Count actual plays
 per card after regenerating; 0 plays means a registered rule with no oracle behind it.
+At 40 seeds each batch-2 card lands 89–207 un-upgraded and 65–170 upgraded plays across
+the five shipped encounters, which is the margin `seedLimit` is tuned for.
+
+**Batch 3 onward: replace variants 1/2, do not stack more pairs.** A later batch's deck is
+a superset of this one's, so its variant pair subsumes these — appending a third pair
+would re-verify the same cards at ~20MB a batch and put the engine repo past 100MB after
+a few rounds. Keep variant 0 (the original committed baseline, cheap and already there)
+plus exactly one current-full-deck pair, and let the pair's lines be rewritten in place.
+The rewrite stays confined to the file's tail because ordering is variant-major.
 
 ## Splitting into the engine repo layout
 
