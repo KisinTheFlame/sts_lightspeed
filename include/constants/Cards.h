@@ -538,6 +538,7 @@ namespace sts {
             case CardId::INFERNAL_BLADE:
             case CardId::INTIMIDATE:
             case CardId::PUMMEL:
+            case CardId::SEEING_RED:
             case CardId::SHOCKWAVE:
             case CardId::EXHUME:
             case CardId::FEED:
@@ -739,6 +740,7 @@ namespace sts {
             case CardId::SWIFT_STRIKE:
             case CardId::THINKING_AHEAD:
             case CardId::VIOLENCE:
+            case CardId::TRIP:
             case CardId::WARCRY:
                 return 0;
 
@@ -752,7 +754,6 @@ namespace sts {
             case CardId::STRIKE_PURPLE:
             case CardId::STRIKE_RED:
             case CardId::SWORD_BOOMERANG:
-            case CardId::TRIP:
             case CardId::TRUE_GRIT:
             case CardId::WILD_STRIKE:
                 return 1;
