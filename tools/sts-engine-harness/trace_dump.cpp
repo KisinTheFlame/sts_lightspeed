@@ -344,12 +344,12 @@ int main() {
     // ---- deck variants -------------------------------------------------------
     //
     // Every trace records the deck it was generated with, so the replayer replays
-    // whatever each line states. That makes coverage APPEND-ONLY: a new batch of
-    // registered cards adds new variants instead of regenerating the existing 23MB.
+    // whatever each line states.
     //
-    // Variant 0 MUST stay first and unchanged — its traceIdx values (0..N) drive the
-    // relic/potion rotation, so keeping it first reproduces the committed files
-    // byte-for-byte. New variants continue the counter and only ever append lines.
+    // Layout: variant 0 is FROZEN; variants 1/2 carry the current full deck and are
+    // REGENERATED every batch. Variant 0 stays first and unchanged because its traceIdx
+    // values (0..N) drive the relic/potion rotation — keeping it first reproduces its
+    // committed lines byte-for-byte, which is what tools/regen-traces.sh checks.
     //
     // `upgradeAll` covers the other half of every card rule. The un-upgraded pass
     // alone never exercises the `up ? x : y` branch, which is exactly where a
@@ -403,43 +403,55 @@ int main() {
         CardId::THINKING_AHEAD, CardId::TRUE_GRIT, CardId::WARCRY,
     };
 
-    // ---- HARD CAP: a deck may not exceed CardManager::MAX_GROUP_SIZE (64) ---------
+    // ---- DECK CAP: Deck::MAX_SIZE (96), not CardManager::MAX_GROUP_SIZE (64) ------
     //
-    // CardManager::init does `drawPile.resize(gc.deck.size())` and fixed_list has NO
-    // bounds checking whatsoever (fixed_list.h: `void resize(int size) { list_size = size; }`),
-    // so a deck of 65+ writes straight past a std::array<CardInstance,64> — silent memory
-    // corruption, not an assert. Variants 1/2 sit at 62 (10 starter + batches 1-3), i.e. two
-    // slots from the edge, so batch 4 could NOT be folded into them.
+    // The three combat piles are NOT the constraint, even though CardManager::init does
+    // `drawPile.resize(gc.deck.size())`. drawPile / discardPile / exhaustPile are
+    // fixed_list<CardInstance, MAX_GROUP_SIZE=64> only under
+    // `#ifdef sts_card_manager_use_fixed_list` (CardManager.h:34) — and sts_common.h:12 has
+    // that #define COMMENTED OUT, with no -D anywhere in the build line above. In this build
+    // they are plain std::vector and grow freely.
     //
-    // Hence variants are no longer "one pair carrying the current full deck". Each pair
-    // carries the starter deck + batch 1 (for pile variety among already-verified cards)
-    // + the batch being introduced. Earlier pairs stay byte-identical, so the committed
-    // data keeps its prefix guarantee and tools/regen-traces.sh's reproducibility check
-    // keeps working.
+    // What does cap the deck is the master deck itself: Deck::cards is
+    // fixed_list<Card, Deck::MAX_SIZE=96> (Deck.h:26-28), and fixed_list has NO bounds
+    // checking whatsoever (`void push_back(T t) { arr[list_size++] = t; }`,
+    // `void resize(int size) { list_size = size; }`), so a 97th card is silent memory
+    // corruption rather than an assert. CardManager::init's `fixed_list<int, Deck::MAX_SIZE>
+    // idxs` and `bool isInnateMemo[Deck::MAX_SIZE]` are sized off the same constant.
+    //
+    // One reachable MAX_GROUP_SIZE(64) fixed_list does survive, and it is not a pile:
+    // ViolenceAction's `attackIdxList` (Actions.cpp:616) collects the draw pile's ATTACK
+    // cards, so it needs 65+ attacks *in the draw pile* to overflow — count attacks, not
+    // deck size, when VIOLENCE finally gets registered. (UpgradeRandomCardAction's
+    // `upgradeableHandIdxs` at Actions.cpp:942 is fixed_list<int,10> and the hand caps at
+    // 10, so that one is safe by construction.)
     //
     // Variant 0 MUST stay first and unchanged — its traceIdx values (0..N) drive the
-    // relic/potion rotation. New pairs are appended, so they only ever add lines.
+    // relic/potion rotation, so keeping it first reproduces its committed lines
+    // byte-for-byte.
     std::vector<DeckVariant> variants { {BATCH_1, seeds.size(), false} };
     {
-        // Variants 1/2 (62 cards): batches 1-3. Frozen — do NOT extend, see the cap above.
-        std::vector<CardId> b123 = BATCH_1;
-        b123.insert(b123.end(), BATCH_2.begin(), BATCH_2.end());
-        b123.insert(b123.end(), BATCH_3.begin(), BATCH_3.end());
-        variants.push_back({b123, 40, false});
-        variants.push_back({b123, 40, true});
-
-        // Variants 3/4 (31 cards): batch 1 + batch 4. Fewer seeds than the pair above
-        // because a card-select screen costs an extra step per open and the files are
-        // already ~50MB; 20 seeds x 3 floors x 20 encounters is still 1200 traces a pass.
-        std::vector<CardId> b14 = BATCH_1;
-        b14.insert(b14.end(), BATCH_4.begin(), BATCH_4.end());
-        variants.push_back({b14, 20, false});
-        variants.push_back({b14, 20, true});
+        // Variants 1/2 carry the CURRENT FULL DECK (10 starter + batches 1-4 = 73 cards).
+        // Each new batch REPLACES this pair instead of appending another one: a pair costs
+        // ~12MB, so appending would put the repo past 100MB within a few batches. The deck
+        // being a superset of every registered card is also what makes one pair enough.
+        //
+        // The bigger deck's one measured cost: DrawToHandAction's "exactly one candidate,
+        // skip the screen" shortcut went from 20 mutation failures to 0, because a 73-card
+        // draw pile practically always holds >= 2 skills / attacks. Every registered card is
+        // still played in both branches (tools/check-coverage.mjs). Recorded as a blind spot
+        // in the engine repo's TODOS.md.
+        std::vector<CardId> full = BATCH_1;
+        full.insert(full.end(), BATCH_2.begin(), BATCH_2.end());
+        full.insert(full.end(), BATCH_3.begin(), BATCH_3.end());
+        full.insert(full.end(), BATCH_4.begin(), BATCH_4.end());
+        variants.push_back({full, 40, false});
+        variants.push_back({full, 40, true});
     }
     for (const auto &v : variants) {
         // 10 starter cards are added by the GameContext constructor.
-        if (v.extra.size() + 10 > 64) {
-            std::cerr << "deck variant exceeds CardManager::MAX_GROUP_SIZE (64): "
+        if (static_cast<int>(v.extra.size()) + 10 > Deck::MAX_SIZE) {
+            std::cerr << "deck variant exceeds Deck::MAX_SIZE (" << Deck::MAX_SIZE << "): "
                       << (v.extra.size() + 10) << " cards" << std::endl;
             return 1;
         }
