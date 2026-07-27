@@ -122,11 +122,28 @@ static const char *outcomeName(Outcome o) {
     }
 }
 
+// Gold at the moment this battle started, so snapshots can report a DELTA.
+//
+// Player::gold is a run-level resource copied in by BattleContext::init
+// (`player.gold = gc.gold`, BattleContext.cpp:55) and copied back out by exitBattle
+// (`g.gold = player.gold`, :484). Inside a battle exactly two things touch it:
+// HAND_OF_GREED's kill bonus (Player::gainGold) and the Looter/Mugger theft
+// (Monster::stealGoldFromPlayer). Neither can happen in the five encounters this repo
+// keeps, so before batch 11 gold was the constant 99 in every committed line.
+//
+// Hence a DELTA, emitted only when non-zero — the same trick `deckUpgraded` uses below.
+// Dumping gold unconditionally would rewrite every line of every file including the
+// FROZEN variant 0, which is precisely what tools/regen-traces.sh refuses.
+static int s_goldBaseline = 0;
+
 static std::string snapshot(const BattleContext &bc) {
     std::ostringstream os;
     os << "{";
     os << q("turn") << ":" << bc.turn;
     os << "," << q("outcome") << ":" << q(outcomeName(bc.outcome));
+    if (static_cast<int>(bc.player.gold) != s_goldBaseline) {
+        os << "," << q("goldGained") << ":" << (static_cast<int>(bc.player.gold) - s_goldBaseline);
+    }
 
     os << "," << q("player") << ":{"
        << q("hp") << ":" << bc.player.curHp
@@ -245,14 +262,10 @@ static bool isReplayablePotion(Potion p) {
 // batch-8 variants not yet added — the whole file reproduced byte for byte.
 static bool isReplayableCard(CardId id) {
     switch (id) {
-        // Batches 11/12, plus the ones the reference itself never implemented well enough
-        // to be an oracle. (Batch 9's HAVOC / MAYHEM / DOUBLE_TAP / DUAL_WIELD and batch 10's
-        // WHIRLWIND / TRANSMUTATION / APOTHEOSIS were removed from this list when they were
-        // registered.)
-        case CardId::PERFECTED_STRIKE:  // batch 11 (needs strikeCount)
-        case CardId::CLASH:             // batch 11 (canUse: hand must be all attacks)
-        case CardId::HAND_OF_GREED:     // batch 11
-        case CardId::THE_BOMB:          // batch 11
+        // Batch 12, plus the ones the reference itself never implemented well enough
+        // to be an oracle. (Batch 9's HAVOC / MAYHEM / DOUBLE_TAP / DUAL_WIELD, batch 10's
+        // WHIRLWIND / TRANSMUTATION / APOTHEOSIS and batch 11's PERFECTED_STRIKE / CLASH /
+        // HAND_OF_GREED / THE_BOMB were removed from this list when they were registered.)
         case CardId::DARK_SHACKLES:     // batch 12 (two reference-side bugs to fix first)
         case CardId::VIOLENCE:          // batch 12 (reference-side bug: duplicates cards)
         case CardId::FORETHOUGHT:       // reference's upgraded branch is commented out
@@ -701,6 +714,34 @@ int main() {
         CardId::TRANSMUTATION, CardId::TRANSMUTATION,
     };
 
+    // Batch 11 — four unrelated small mechanisms, one per card:
+    //
+    //   PERFECTED_STRIKE -> damage is 6 + cards.strikeCount * (up ? 3 : 2), where strikeCount
+    //                       is an INCREMENTAL counter maintained by
+    //                       CardManager::notifyAddCardToCombat / notifyRemoveFromCombat
+    //   CLASH            -> CardInstance::canUse's ATTACK arm: canUseClash requires the whole
+    //                       hand to be Attacks
+    //   HAND_OF_GREED    -> Monster::damage (not attacked), and Player::gainGold on a kill
+    //   THE_BOMB         -> Player::bomb1/2/3, a three-slot timer resolved at the TOP of
+    //                       Player::applyEndOfTurnPowers, before the statusMap loop
+    //
+    // ⚠ SPLIT ACROSS TWO VARIANT PAIRS, and the split is forced by DAMAGE, not by
+    // replayability (unlike batch 10's). The Bomb only detonates at the END of the third
+    // player turn after it is played, so its oracle needs battles that LAST that long — while
+    // Perfected Strike is the single hardest-hitting card in the Ironclad pool once the five
+    // starter Strikes are counted (6 + 5*2 = 16 before any other Strike joins). Put them in one
+    // deck and Cultist (48-54 HP) dies on turn 2 or 3, and `if (bomb1)` never fires: every
+    // shift is observable only through the DamageAllEnemy that follows it. So the Bomb gets a
+    // deliberately damage-POOR deck of its own.
+    const std::vector<CardId> BATCH_11_STRIKE {
+        CardId::PERFECTED_STRIKE, CardId::PERFECTED_STRIKE,
+        CardId::CLASH, CardId::CLASH,
+        CardId::HAND_OF_GREED, CardId::HAND_OF_GREED,
+    };
+    const std::vector<CardId> BATCH_11_BOMB {
+        CardId::THE_BOMB, CardId::THE_BOMB,
+    };
+
     // ---- DECK CAP: Deck::MAX_SIZE (96), not CardManager::MAX_GROUP_SIZE (64) ------
     //
     // The three combat piles are NOT the constraint, even though CardManager::init does
@@ -1004,6 +1045,94 @@ int main() {
         batch10b.push_back(CardId::ENTRENCH);
         variants.push_back({batch10b, 40, false, batch10Encounters});
         variants.push_back({batch10b, 40, true,  batch10Encounters});
+
+        // Encounter filter for both batch-11 pairs (Cultist + Two Louse only), same as
+        // batches 9 and 10 — jaw_worm_horde.jsonl is frozen at 46MB of a 100MB hard limit.
+        // Cultist is the single-monster control and, at 48-54 HP, the LONGEST of the two,
+        // which is what The Bomb's three-turn timer needs; Two Louse is what gives
+        // Hand of Greed something cheap enough (10-15 HP) to actually KILL, which is the
+        // only way its gold branch fires.
+        const std::vector<MonsterEncounter> batch11Encounters {
+            MonsterEncounter::CULTIST, MonsterEncounter::TWO_LOUSE,
+        };
+
+        // Variants 15/16: PERFECTED_STRIKE + CLASH + HAND_OF_GREED
+        // (10 starter + 6 + 8 enablers = 24 cards). Structural reason for its own pair is the
+        // same as batches 7-10: the full deck is 93 and Deck::MAX_SIZE is 96.
+        //
+        // The enablers exist to make strikeCount MOVE. Its two hooks live at very specific
+        // places, and a deck that only ever gains cards would leave half of them dead:
+        //   FIEND_FIRE x2    exhausts the ENTIRE hand, so it is the heavy lever on
+        //                    notifyRemoveFromCombat (moveToExhaustPile is the counter's ONLY
+        //                    decrement). Five starter Strikes plus Perfected Strike itself
+        //                    means a Fiend Fire routinely drops strikeCount by 2-3 at once,
+        //                    and the very next Perfected Strike hits for visibly less.
+        //                    Two copies because it exhausts itself (one play per copy per
+        //                    battle), and its own damage scales with the cards exhausted.
+        //   EXHUME           the ONLY path that puts a card BACK into combat
+        //                    (chooseExhumeCard calls notifyAddCardToCombat explicitly after
+        //                    removeFromExhaustPile). Fiend Fire fills the exhaust pile with
+        //                    Strikes for it to fish out. One copy is enough — batch 4 already
+        //                    covers the "candidates exclude Exhume itself" filter with two.
+        //   DUAL_WIELD       the only registered card that copies an Attack in HAND via
+        //                    createTempCardInHand, i.e. an increment that needs no card pool.
+        //                    Copying a Strike / Perfected Strike bumps the counter.
+        //   WILD_STRIKE      two jobs: it IS a Strike card (isCardStrikeCard lists it), and it
+        //                    shuffles a WOUND into the draw pile. The Wound is what makes
+        //                    canUseClash return FALSE while Clash sits in the same hand — a
+        //                    Status card cannot be played, so it STAYS in hand all turn and
+        //                    blocks Clash for that whole turn. Without an unplayable card in
+        //                    the deck the reject arm of the new gate is far rarer.
+        //   SWIFT_STRIKE     a 0-cost Strike card. Cheap counter fodder, and being 0-cost it
+        //                    never competes for the energy the batch's own cards want.
+        //   HAVOC x2         the autoplay path. playTopCardInDrawPile hands the choice to the
+        //                    reference, so a Clash on top of the draw pile is run through
+        //                    canUse with inAutoplay = true — and when the hand is not all
+        //                    Attacks the card is DESTROYED (it already left the draw pile).
+        //                    Nothing policy-side can produce that. Havoc also EXHAUSTS what it
+        //                    plays, which is extra decrements for free.
+        //                    Safe here: mayPlayHandCard can check the two piles Havoc reads,
+        //                    and this deck conjures nothing out of CardPools.h.
+        std::vector<CardId> batch11a = BATCH_11_STRIKE;
+        batch11a.push_back(CardId::FIEND_FIRE);
+        batch11a.push_back(CardId::FIEND_FIRE);
+        batch11a.push_back(CardId::EXHUME);
+        batch11a.push_back(CardId::DUAL_WIELD);
+        batch11a.push_back(CardId::WILD_STRIKE);
+        batch11a.push_back(CardId::SWIFT_STRIKE);
+        batch11a.push_back(CardId::HAVOC);
+        batch11a.push_back(CardId::HAVOC);
+        variants.push_back({batch11a, 40, false, batch11Encounters});
+        variants.push_back({batch11a, 40, true,  batch11Encounters});
+
+        // Variants 17/18: THE_BOMB (10 starter + 2 + 6 enablers = 18 cards).
+        //
+        // Damage-POOR on purpose — that is the whole point of the pair. The only attacks in it
+        // are the five starter Strikes and Bash, so ~1.9 attacks per 5-card hand, and the
+        // enablers below soak the energy the policy would otherwise spend on them. Cultist
+        // then survives four or five player turns, which is what lets `if (bomb1)` fire at all.
+        //   IMPERVIOUS x2      2 energy for 30 (40) Block and it EXHAUSTS. The cleanest energy
+        //                      sink in the registered set: it adds no damage, keeps the player
+        //                      alive through the extra turns, and being one-shot it does not
+        //                      make the late game trivial.
+        //   GHOSTLY_ARMOR x2   1 energy for 10 (13) Block, ethereal so it exhausts itself
+        //                      rather than clogging the hand. Same job, cheaper, recycles.
+        //   TRUE_GRIT x2       1 energy for 7 (9) Block AND exhausts a card from hand — at
+        //                      random un-upgraded, chosen (a screen) when upgraded. It actively
+        //                      REMOVES Strikes from the battle, which slows the clock further,
+        //                      and doubles as a second exhaust source.
+        // Two copies of THE_BOMB so both `bomb3 += amount` twice in one turn (a single 80/100
+        // slot, not two timers) and "a second bomb lands while the first is still shifting"
+        // actually happen.
+        std::vector<CardId> batch11b = BATCH_11_BOMB;
+        batch11b.push_back(CardId::IMPERVIOUS);
+        batch11b.push_back(CardId::IMPERVIOUS);
+        batch11b.push_back(CardId::GHOSTLY_ARMOR);
+        batch11b.push_back(CardId::GHOSTLY_ARMOR);
+        batch11b.push_back(CardId::TRUE_GRIT);
+        batch11b.push_back(CardId::TRUE_GRIT);
+        variants.push_back({batch11b, 40, false, batch11Encounters});
+        variants.push_back({batch11b, 40, true,  batch11Encounters});
     }
     for (const auto &v : variants) {
         // 10 starter cards are added by the GameContext constructor.
@@ -1087,6 +1216,10 @@ int main() {
                 // garbage character's potion pool. That is undefined behaviour, not
                 // behaviour worth reproducing, so pin it to the actual character.
                 bc.player.cc = gc.cc;
+
+                // Baseline for the snapshot's `goldGained` delta (see s_goldBaseline).
+                // BattleContext::init has already copied gc.gold into player.gold.
+                s_goldBaseline = gc.gold;
 
                 // Hand out three potions, rotating through the set so different traces
                 // exercise different effects (including Entropic Brew's potionRng draws).
