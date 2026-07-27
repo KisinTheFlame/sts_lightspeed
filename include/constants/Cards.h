@@ -733,6 +733,12 @@ namespace sts {
             case CardId::PANACHE:
             case CardId::PANIC_BUTTON:
             case CardId::PURITY:
+            // RAGE (Ironclad) is 0-cost in the real game, but was never listed here, so it
+            // fell through to `default: return 1` at the bottom of this switch and behaved
+            // as a 1-cost card. Same class of omission as SHIV / SEEK / THROUGH_VIOLENCE,
+            // which are still unlisted (all three are unimplemented elsewhere anyway).
+            // Distinct from the TRIP fix: TRIP was explicitly listed in the *wrong* group.
+            case CardId::RAGE:
             case CardId::RECKLESS_CHARGE:
             case CardId::SADISTIC_NATURE:
             case CardId::SECRET_TECHNIQUE:

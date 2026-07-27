@@ -432,6 +432,30 @@ int main() {
         CardId::EVOLVE,
     };
 
+    // Batch 6 — the event-hook batch: powers that fire "when X happens" rather than on a
+    // turn boundary.
+    //
+    //   FLAME_BARRIER  -> Player::attacked          (retaliate when attacked)
+    //   FIRE_BREATHING -> CardManager::draw         (drew a Status/Curse card)
+    //   RAGE           -> onUseAttackCard           (played an Attack)
+    //   JUGGERNAUT     -> Player::gainBlock         (gained Block; consumes cardRandomRng)
+    //   RUPTURE        -> Player::hpWasLost         (lost HP from a card)
+    //   SENTINEL       -> triggerAndMoveToExhaustPile (was exhausted; sync gainEnergy)
+    //   PANIC_BUTTON   -> calculateCardBlock        (NO_BLOCK gates card-sourced block)
+    //
+    // RUPTURE's oracle needs a self-damage source in the same battle. Batches 2/3/5 already
+    // supply several (HEMOKINESIS, BLOODLETTING, JAX, OFFERING, COMBUST, plus BURN from
+    // IMMOLATE), so no extra copies are needed for it.
+    //
+    // FIRE_BREATHING needs a Status/Curse card to be *drawn*, not merely created. WILD_STRIKE
+    // (Wound) and RECKLESS_CHARGE x2 (Dazed) shuffle theirs into the DRAW pile, so they are
+    // drawn as a matter of course; IMMOLATE's Burn goes to the discard pile and only reaches
+    // hand after a reshuffle (see the variant 3/4 note above).
+    const std::vector<CardId> BATCH_6 {
+        CardId::FLAME_BARRIER, CardId::FIRE_BREATHING, CardId::RAGE, CardId::JUGGERNAUT,
+        CardId::RUPTURE, CardId::SENTINEL, CardId::PANIC_BUTTON,
+    };
+
     // ---- DECK CAP: Deck::MAX_SIZE (96), not CardManager::MAX_GROUP_SIZE (64) ------
     //
     // The three combat piles are NOT the constraint, even though CardManager::init does
@@ -460,7 +484,7 @@ int main() {
     // byte-for-byte.
     std::vector<DeckVariant> variants { {BATCH_1, seeds.size(), false} };
     {
-        // Variants 1/2 carry the CURRENT FULL DECK (10 starter + batches 1-5 = 85 cards).
+        // Variants 1/2 carry the CURRENT FULL DECK (10 starter + batches 1-6 = 92 cards).
         // Each new batch REPLACES this pair instead of appending another one: a pair costs
         // ~12MB, so appending would put the repo past 100MB within a few batches. The deck
         // being a superset of every registered card is also what makes one pair enough.
@@ -475,6 +499,7 @@ int main() {
         full.insert(full.end(), BATCH_3.begin(), BATCH_3.end());
         full.insert(full.end(), BATCH_4.begin(), BATCH_4.end());
         full.insert(full.end(), BATCH_5.begin(), BATCH_5.end());
+        full.insert(full.end(), BATCH_6.begin(), BATCH_6.end());
         variants.push_back({full, 40, false});
         variants.push_back({full, 40, true});
 
