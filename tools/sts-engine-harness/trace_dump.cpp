@@ -245,16 +245,13 @@ static bool isReplayablePotion(Potion p) {
 // batch-8 variants not yet added — the whole file reproduced byte for byte.
 static bool isReplayableCard(CardId id) {
     switch (id) {
-        // Batch 9 (play-from-pile / play-a-copy) and 11/12, plus the four the reference itself
-        // never implemented well enough to be an oracle.
+        // Batches 10/11/12, plus the ones the reference itself never implemented well enough
+        // to be an oracle. (Batch 9's HAVOC / MAYHEM / DOUBLE_TAP / DUAL_WIELD were removed
+        // from this list when they were registered.)
         case CardId::PERFECTED_STRIKE:  // batch 11 (needs strikeCount)
         case CardId::CLASH:             // batch 11 (canUse: hand must be all attacks)
         case CardId::WHIRLWIND:         // X-cost; also the wiring test's "unmigrated" sample
         case CardId::TRANSMUTATION:     // X-cost (batch 10)
-        case CardId::HAVOC:             // batch 9
-        case CardId::MAYHEM:            // batch 9
-        case CardId::DOUBLE_TAP:        // batch 9
-        case CardId::DUAL_WIELD:        // batch 9
         case CardId::HAND_OF_GREED:     // batch 11
         case CardId::THE_BOMB:          // batch 11
         case CardId::DARK_SHACKLES:     // batch 12 (two reference-side bugs to fix first)
@@ -408,6 +405,18 @@ int main() {
         std::vector<CardId> extra;
         size_t seedLimit;   // first N seeds only, to bound file growth
         bool upgradeAll;
+        // Which encounters this variant runs against. EMPTY MEANS ALL, so variants 0-8 keep
+        // emitting exactly the traces they emitted before this field existed.
+        //
+        // Why per-variant filtering exists from batch 9 on: jaw_worm_horde.jsonl is already
+        // 48MB and GitHub's hard per-file limit is 100MB. Three Jaw Worms make the longest
+        // battles and therefore the fattest snapshots, while a FOCUSED variant's whole point
+        // is to walk one batch's CARD branches — which barely depend on what is standing in
+        // front of you. One single-monster encounter (Cultist) plus one multi-monster
+        // encounter (Two Louse) covers the target-selection differences that do matter
+        // (getRandomMonsterIdx, AttackAllEnemy, monsters dying mid-queue) at a fraction of
+        // the bytes.
+        std::vector<MonsterEncounter> encounters;
     };
 
     // Batch 1 (already registered, verified by the committed variant-0 traces).
@@ -548,6 +557,34 @@ int main() {
     const std::vector<CardId> BATCH_8 {
         CardId::CHRYSALIS, CardId::METAMORPHOSIS, CardId::DISCOVERY,
         CardId::JACK_OF_ALL_TRADES, CardId::INFERNAL_BLADE,
+    };
+
+    // Batch 9 — the play-from-pile / play-a-copy batch. All four make the CARD QUEUE nest:
+    // a card being used pushes ANOTHER card-queue item, so useCard re-enters.
+    //
+    //   HAVOC       -> PlayTopCard(getRandomMonsterIdx(cardRandomRng), exhausts=true)
+    //   MAYHEM      -> BuffPlayer<MAYHEM>: same PlayTopCard, exhausts=false, every turn START
+    //   DOUBLE_TAP  -> BuffPlayer<DOUBLE_TAP>: onUseAttackCard queuePurgeCard's a COPY
+    //   DUAL_WIELD  -> DualWieldAction: copies an Attack/Power in hand (card-select screen)
+    //
+    // Copies are deliberate, and each one targets a branch a single copy cannot reach:
+    //   HAVOC x2       cheap (1 / upgraded 0), and more plays means more chances to hit the
+    //                  empty-draw-pile branch (addToTop EmptyDeckShuffle then re-run).
+    //   MAYHEM x2      the ONLY way to stack the power to 2, which is in turn the only way to
+    //                  (a) have two PlayTopCard actions queued in one turn, so the second one
+    //                  pushes onto a NON-EMPTY card queue, and (b) reach
+    //                  addPurgeCardToCardQueue's `size > 0` branch, where the purge copy lands
+    //                  SECOND rather than first.
+    //   DOUBLE_TAP x2  1-cost; two copies make "double tap is up" common enough that the
+    //                  attacks below actually get doubled.
+    //   DUAL_WIELD x2  separates the two DualWieldAction branches: `validCount == 1` copies
+    //                  straight away (no hand reorder, no new uid on the original) while
+    //                  `>= 2` opens the screen. One copy alone leaves the shortcut thin.
+    const std::vector<CardId> BATCH_9 {
+        CardId::HAVOC, CardId::HAVOC,
+        CardId::MAYHEM, CardId::MAYHEM,
+        CardId::DOUBLE_TAP, CardId::DOUBLE_TAP,
+        CardId::DUAL_WIELD, CardId::DUAL_WIELD,
     };
 
     // ---- DECK CAP: Deck::MAX_SIZE (96), not CardManager::MAX_GROUP_SIZE (64) ------
@@ -710,6 +747,50 @@ int main() {
         batch8.push_back(CardId::CORRUPTION);
         variants.push_back({batch8, 40, false});
         variants.push_back({batch8, 40, true});
+
+        // Variants 9/10: a FOCUSED deck for batch 9 (10 starter + batch 9's 8 + 4 enablers = 22).
+        //
+        // Same structural reason as batches 7 and 8: the full deck is 93 cards and
+        // Deck::MAX_SIZE is 96. Variants 0-8 stay untouched.
+        //
+        // FIRST VARIANT PAIR WITH AN ENCOUNTER FILTER (Cultist + Two Louse only). See the
+        // DeckVariant::encounters comment: jaw_worm_horde.jsonl is at 48MB of a 100MB hard
+        // limit, three Jaw Worms give the longest battles and fattest frames, and a focused
+        // variant's value lies in card branches, not in which monster is standing there.
+        //
+        // The four enablers each unlock code the batch's own cards cannot reach alone:
+        //   RAMPAGE          the only registered attack carrying per-instance state
+        //                    (specialData +5 per play). It is what makes two otherwise
+        //                    invisible transcriptions observable through damage numbers:
+        //                    (a) queuePurgeCard copies the instance BY VALUE, so a double-tapped
+        //                        Rampage hits for +10 on the second swing but the card that
+        //                        lands in the discard pile has only grown by +5;
+        //                    (b) chooseDualWieldCard copies the whole instance rather than
+        //                        rebuilding a prototype, so a Rampage copy starts at the
+        //                        original's current growth.
+        //   INFLAME          a POWER, and the only non-Attack thing Dual Wield may copy here.
+        //                    Without it isDualWieldable's POWER arm is dead code and
+        //                    "Dual Wield an already-played Power" never happens.
+        //   RECKLESS_CHARGE  shuffles DAZED into the DRAW pile. Dazed is a Status card, so when
+        //                    Havoc/Mayhem turn up one on top, CardInstance::canUse rejects it
+        //                    and the card is DESTROYED (it left the draw pile inside
+        //                    playTopCardInDrawPile and lives only in the queue item). Nothing
+        //                    else in this deck can put an unplayable card on top of the draw pile.
+        //   HEADBUTT         an ATTACK that opens a card-select screen. Double Tap + Headbutt is
+        //                    the only combination here that leaves an item SITTING IN THE CARD
+        //                    QUEUE while a screen is open — the state the engine side had to
+        //                    start serialising this batch. It also gives Havoc/Mayhem a card
+        //                    whose autoplay opens a screen.
+        std::vector<CardId> batch9 = BATCH_9;
+        batch9.push_back(CardId::RAMPAGE);
+        batch9.push_back(CardId::INFLAME);
+        batch9.push_back(CardId::RECKLESS_CHARGE);
+        batch9.push_back(CardId::HEADBUTT);
+        const std::vector<MonsterEncounter> batch9Encounters {
+            MonsterEncounter::CULTIST, MonsterEncounter::TWO_LOUSE,
+        };
+        variants.push_back({batch9, 40, false, batch9Encounters});
+        variants.push_back({batch9, 40, true,  batch9Encounters});
     }
     for (const auto &v : variants) {
         // 10 starter cards are added by the GameContext constructor.
@@ -726,6 +807,11 @@ int main() {
 
     for (const auto &variant : variants) {
     for (const auto &enc : encounters) {
+        if (!variant.encounters.empty() &&
+            std::find(variant.encounters.begin(), variant.encounters.end(), enc.first)
+                == variant.encounters.end()) {
+            continue;
+        }
         for (size_t seedIdx = 0; seedIdx < seeds.size() && seedIdx < variant.seedLimit; ++seedIdx) {
             const auto &sd = seeds[seedIdx];
             for (int floor : floors) {
