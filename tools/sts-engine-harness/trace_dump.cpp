@@ -468,6 +468,22 @@ int main() {
         CardId::JUGGERNAUT, CardId::RUPTURE, CardId::SENTINEL, CardId::PANIC_BUTTON,
     };
 
+    // Batch 7 — the per-card-instance state batch (CardInstance::cost / costForTurn /
+    // specialData).
+    //
+    //   RAMPAGE         -> specialData grows +5/+8 per play
+    //   SEARING_BLOW    -> damage is n(n+7)/2+12 where n = specialData (upgrade count)
+    //   BLOOD_FOR_BLOOD -> CardManager::onTookDamage lowers this instance's cost by 1
+    //   MADNESS         -> zeroes a random hand card's cost (rejection-sampling loop)
+    //   CORRUPTION      -> all Skills cost 0 and exhaust on play
+    //   APPARITION      -> Intangible 1, and is ethereal only while un-upgraded
+    //
+    // This batch does NOT go into the full deck (variants 1/2) — see the variant list below.
+    const std::vector<CardId> BATCH_7 {
+        CardId::RAMPAGE, CardId::SEARING_BLOW, CardId::BLOOD_FOR_BLOOD,
+        CardId::MADNESS, CardId::CORRUPTION, CardId::APPARITION,
+    };
+
     // ---- DECK CAP: Deck::MAX_SIZE (96), not CardManager::MAX_GROUP_SIZE (64) ------
     //
     // The three combat piles are NOT the constraint, even though CardManager::init does
@@ -534,6 +550,42 @@ int main() {
         focused.push_back(CardId::MIND_BLAST);
         variants.push_back({focused, 40, false});
         variants.push_back({focused, 40, true});
+
+        // Variants 5/6: a FOCUSED deck for batch 7 (10 starter + batch 7 + 4 enablers = 20).
+        //
+        // Why batch 7 is NOT folded into the full deck: it no longer fits. The full deck is
+        // 10 starter + batches 1-6 = 93 cards, and Deck::MAX_SIZE is 96 (see the DECK CAP note
+        // above) — 93 + 6 = 99. The cap is a hard structural limit, not a budget choice, and
+        // fixed_list has no bounds checking, so overflowing it is silent memory corruption.
+        // Shrinking the full deck to fit would mean dropping the deliberate duplicate copies
+        // (EXHUME x2, RECKLESS_CHARGE x2, FIRE_BREATHING x2), each of which was added to reach
+        // a specific branch, and would still leave zero headroom for batch 8. Leaving
+        // variants 0-4 untouched instead keeps every mutation-test figure already measured on
+        // them valid, and gives batch 7 far better coverage density than 96 cards would.
+        //
+        // The four enablers are picked to reach the new code, not to pad the deck:
+        //   ARMAMENTS    — the only in-combat upgrade source. It is what drives SEARING_BLOW's
+        //                  specialData past 1, and it is the only way to reach
+        //                  CardInstance::upgrade's tail (cost/costForTurn rewritten to the
+        //                  upgraded energy cost) while CORRUPTION is up, which is in turn the
+        //                  only way useCard's `!(corruption && skill)` energy clause matters.
+        //   BLOODLETTING — self damage on demand, so BLOOD_FOR_BLOOD's cost actually walks down
+        //                  from 4 early in a battle rather than only after monster hits. It is
+        //                  itself 0-cost, which also exercises onBuffCorruption's `cost > 0`
+        //                  filter taking the false branch.
+        //   IMMOLATE     — puts Burn in the discard pile; at 20 cards a reshuffle brings it to
+        //                  hand within a few turns, so Player::damage's Intangible clamp (a
+        //                  different code path from Monster::calculateDamageToPlayer's) is
+        //                  reachable while APPARITION is up.
+        //   SHRUG_IT_OFF — a plain 1-cost skill, so CORRUPTION has something to zero besides
+        //                  the starter Defends.
+        std::vector<CardId> batch7 = BATCH_7;
+        batch7.push_back(CardId::ARMAMENTS);
+        batch7.push_back(CardId::BLOODLETTING);
+        batch7.push_back(CardId::IMMOLATE);
+        batch7.push_back(CardId::SHRUG_IT_OFF);
+        variants.push_back({batch7, 40, false});
+        variants.push_back({batch7, 40, true});
     }
     for (const auto &v : variants) {
         // 10 starter cards are added by the GameContext constructor.
@@ -585,9 +637,20 @@ int main() {
                 // Only upgrade what the reference itself says can be upgraded: forcing the
                 // flag onto a card with no upgraded form would make the two sides disagree
                 // about its cost for a reason that has nothing to do with the card's rule.
+                //
+                // Upgrade via Card::upgrade() rather than the Card(id, upgraded) constructor.
+                // They differ for exactly one card: SEARING_BLOW keeps its upgrade COUNT in
+                // Card::misc, and only upgrade() increments it (Card.cpp:9). The two-arg
+                // constructor sets `upgraded = true` but leaves misc at 0, so
+                // CardInstance(const Card&) would read specialData = getUpgraded() = 0 and the
+                // "upgraded" Searing Blow would deal the un-upgraded 12 damage while claiming
+                // to be upgraded. Identical for every other card, and variant 0 is
+                // un-upgraded, so this changes nothing already committed.
                 for (auto cid : variant.extra) {
                     const bool up = variant.upgradeAll && Card(cid).canUpgrade();
-                    gc.deck.obtain(gc, Card(cid, up ? 1 : 0));
+                    Card c(cid);
+                    if (up) c.upgrade();
+                    gc.deck.obtain(gc, c);
                 }
 
                 BattleContext bc;
