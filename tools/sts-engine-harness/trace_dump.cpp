@@ -451,9 +451,16 @@ int main() {
     // (Wound) and RECKLESS_CHARGE x2 (Dazed) shuffle theirs into the DRAW pile, so they are
     // drawn as a matter of course; IMMOLATE's Burn goes to the discard pile and only reaches
     // hand after a reshuffle (see the variant 3/4 note above).
+    //
+    // FIRE_BREATHING appears TWICE on purpose. Status cards are plentiful, but the *power*
+    // has to be up when one is drawn, and with one copy in a 92-card deck it was played in
+    // only ~76 traces, of which ~7 went on to draw a status card — measured: deleting the
+    // whole status-draw hook failed 7 replays, and making its damage synchronous failed 1.
+    // A single example is one deck change away from being a blind spot, so the copy count
+    // doubles the number of traces where the power is up at all.
     const std::vector<CardId> BATCH_6 {
-        CardId::FLAME_BARRIER, CardId::FIRE_BREATHING, CardId::RAGE, CardId::JUGGERNAUT,
-        CardId::RUPTURE, CardId::SENTINEL, CardId::PANIC_BUTTON,
+        CardId::FLAME_BARRIER, CardId::FIRE_BREATHING, CardId::FIRE_BREATHING, CardId::RAGE,
+        CardId::JUGGERNAUT, CardId::RUPTURE, CardId::SENTINEL, CardId::PANIC_BUTTON,
     };
 
     // ---- DECK CAP: Deck::MAX_SIZE (96), not CardManager::MAX_GROUP_SIZE (64) ------
@@ -484,7 +491,7 @@ int main() {
     // byte-for-byte.
     std::vector<DeckVariant> variants { {BATCH_1, seeds.size(), false} };
     {
-        // Variants 1/2 carry the CURRENT FULL DECK (10 starter + batches 1-6 = 92 cards).
+        // Variants 1/2 carry the CURRENT FULL DECK (10 starter + batches 1-6 = 93 cards).
         // Each new batch REPLACES this pair instead of appending another one: a pair costs
         // ~12MB, so appending would put the repo past 100MB within a few batches. The deck
         // being a superset of every registered card is also what makes one pair enough.
