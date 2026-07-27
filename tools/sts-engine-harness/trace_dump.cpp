@@ -245,13 +245,12 @@ static bool isReplayablePotion(Potion p) {
 // batch-8 variants not yet added — the whole file reproduced byte for byte.
 static bool isReplayableCard(CardId id) {
     switch (id) {
-        // Batches 10/11/12, plus the ones the reference itself never implemented well enough
-        // to be an oracle. (Batch 9's HAVOC / MAYHEM / DOUBLE_TAP / DUAL_WIELD were removed
-        // from this list when they were registered.)
+        // Batches 11/12, plus the ones the reference itself never implemented well enough
+        // to be an oracle. (Batch 9's HAVOC / MAYHEM / DOUBLE_TAP / DUAL_WIELD and batch 10's
+        // WHIRLWIND / TRANSMUTATION / APOTHEOSIS were removed from this list when they were
+        // registered.)
         case CardId::PERFECTED_STRIKE:  // batch 11 (needs strikeCount)
         case CardId::CLASH:             // batch 11 (canUse: hand must be all attacks)
-        case CardId::WHIRLWIND:         // X-cost; also the wiring test's "unmigrated" sample
-        case CardId::TRANSMUTATION:     // X-cost (batch 10)
         case CardId::HAND_OF_GREED:     // batch 11
         case CardId::THE_BOMB:          // batch 11
         case CardId::DARK_SHACKLES:     // batch 12 (two reference-side bugs to fix first)
@@ -259,13 +258,87 @@ static bool isReplayableCard(CardId id) {
         case CardId::FORETHOUGHT:       // reference's upgraded branch is commented out
         case CardId::MAGNETISM:
         case CardId::ENLIGHTENMENT:
-        case CardId::APOTHEOSIS:
         case CardId::PANACHE:
         case CardId::SADISTIC_NATURE:
             return false;
         default:
             return true;
     }
+}
+
+// ---- second half of the gate: cards that make the REFERENCE pick a card ------------------
+//
+// isReplayableCard above only filters what the POLICY picks out of hand. That is not enough
+// once batch 9 registered HAVOC and MAYHEM: both hand the choice to
+// BattleContext::playTopCardInDrawPile, which takes whatever is on top of the draw pile and
+// consults no gate at all. Batch 10 hit this for real — in variants 7/8 (batch 8's pool cards)
+// a CHRYSALIS-conjured HAVOC and a JACK_OF_ALL_TRADES-conjured MAYHEM each played a CLASH that
+// the engine has no rule for, and the replay threw "暂未登记卡牌行为" mid-trace. It was latent
+// from batch 9 on; only the reshuffled RNG stream of a new batch made it surface.
+//
+// The two cards need different tests because one is instantaneous and the other persists.
+static bool anyUnreplayableIn(const std::vector<CardInstance> &pile) {
+    for (const auto &c : pile) {
+        if (!isReplayableCard(c.getId())) return true;
+    }
+    return false;
+}
+
+// Cards that conjure a card DEFINITION out of CardPools.h, i.e. the only way an unregistered
+// card can appear in a combat whose deck holds none.
+static bool isPoolConjuringCard(CardId id) {
+    switch (id) {
+        case CardId::CHRYSALIS:
+        case CardId::METAMORPHOSIS:
+        case CardId::DISCOVERY:
+        case CardId::JACK_OF_ALL_TRADES:
+        case CardId::INFERNAL_BLADE:
+        case CardId::TRANSMUTATION:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool anyPoolConjuringIn(const std::vector<CardInstance> &pile) {
+    for (const auto &c : pile) {
+        if (isPoolConjuringCard(c.getId())) return true;
+    }
+    return false;
+}
+
+// Whether the policy may play hand[handIdx]. Wraps isReplayableCard with the autoplay rules.
+static bool mayPlayHandCard(const BattleContext &bc, int handIdx) {
+    const auto id = bc.cards.hand[handIdx].getId();
+    if (!isReplayableCard(id)) return false;
+
+    if (id == CardId::HAVOC) {
+        // Havoc plays the draw pile's top card immediately, and if the draw pile is EMPTY it
+        // shuffles the discard pile in first and plays the new top — so both piles must be
+        // clean. Nothing conjures between the play and the action, so "clean right now" is
+        // sound here. Deliberately NOT gated on the draw pile being non-empty: the
+        // empty-draw-pile branch of playTopCardInDrawPile is one of the things batch 9's
+        // variants 9/10 exist to cover.
+        return !anyUnreplayableIn(bc.cards.drawPile) && !anyUnreplayableIn(bc.cards.discardPile);
+    }
+
+    if (id == CardId::MAYHEM) {
+        // Mayhem is a POWER: it keeps playing the draw pile's top card at the start of every
+        // remaining turn, so "clean right now" is NOT enough. Nothing may be able to conjure an
+        // unregistered card later either — and that includes a conjuring card being played by
+        // Mayhem itself, which no policy-side check can refuse. Hence the stronger test: no
+        // unregistered card and no pool-conjuring card anywhere in the combat.
+        for (const auto *pile : {&bc.cards.drawPile, &bc.cards.discardPile, &bc.cards.exhaustPile}) {
+            if (anyUnreplayableIn(*pile) || anyPoolConjuringIn(*pile)) return false;
+        }
+        for (int i = 0; i < bc.cards.cardsInHand; ++i) {
+            const auto hid = bc.cards.hand[i].getId();
+            if (!isReplayableCard(hid) || isPoolConjuringCard(hid)) return false;
+        }
+        return true;
+    }
+
+    return true;
 }
 
 // Card-select screens use a different action space. Enumerate what the reference
@@ -319,7 +392,7 @@ static bool pickAction(const BattleContext &bc, Step &out) {
         if (a.isValidAction(bc)) { out = {"potion", i, target}; return true; }
     }
     for (int i = 0; i < bc.cards.cardsInHand; ++i) {
-        if (!isReplayableCard(bc.cards.hand[i].getId())) continue;
+        if (!mayPlayHandCard(bc, i)) continue;
         search::Action a(search::ActionType::CARD, i, target);
         if (a.isValidAction(bc)) { out = {"card", i, target}; return true; }
     }
@@ -587,6 +660,47 @@ int main() {
         CardId::DUAL_WIELD, CardId::DUAL_WIELD,
     };
 
+    // Batch 10 — the X-cost batch. WHIRLWIND and TRANSMUTATION are the two Ironclad/colorless
+    // X-cost cards the reference implements; APOTHEOSIS is not X-cost but is registered in the
+    // same batch.
+    //
+    //   WHIRLWIND      -> WhirlwindAction(base + Vigor, item.energyOnUse, !freeToPlay):
+    //                     one damage matrix, then AttackAllMonsterRecursive X times
+    //   TRANSMUTATION  -> TransmutationAction(upgraded, item.energyOnUse, !freeToPlay):
+    //                     X random COLOURLESS cards to hand at cost 0 FOR THE TURN, and
+    //                     upgraded when the Transmutation itself is
+    //   APOTHEOSIS     -> ApotheosisAction: upgrade every canUpgrade() card in hand, draw pile,
+    //                     discard pile AND exhaust pile
+    //
+    // Copies:
+    //   WHIRLWIND x1    it does NOT exhaust, so one copy recycles and gets played many times
+    //                   per battle. A second copy would only starve the other two of energy:
+    //                   the policy plays the LEFTMOST playable card and Whirlwind is playable
+    //                   at 0 energy (costForTurn is the -1 X sentinel), so every Whirlwind in
+    //                   hand drains the turn's energy to 0 before anything to its right runs.
+    //   TRANSMUTATION x2 / APOTHEOSIS x2
+    //                   both EXHAUST, so one copy is at most one play per battle. Two copies
+    //                   double the sample; for Apotheosis the second copy is not redundant —
+    //                   after the first one everything is upgraded, so it exercises
+    //                   canUpgrade() returning false, plus SEARING_BLOW (below) which is the
+    //                   one card canUpgrade() keeps saying yes to.
+    //
+    // ⚠ THE BATCH IS SPLIT ACROSS TWO VARIANT PAIRS, and the split is forced, not stylistic:
+    // TRANSMUTATION conjures out of the colourless pool, 9 of whose 34 cards are unregistered,
+    // and MAYHEM plays the draw pile's top card every turn for the rest of the battle with no
+    // gate the harness can apply. Put them in one deck and the conjured junk eventually reaches
+    // the draw pile top and Mayhem plays it, making the trace unreplayable. So Mayhem lives with
+    // Whirlwind/Apotheosis (a pool-free deck) and Transmutation gets its own pair without it.
+    // Havoc is fine in both because it is instantaneous and mayPlayHandCard can check the two
+    // piles it will read.
+    const std::vector<CardId> BATCH_10_WHIRLWIND {
+        CardId::WHIRLWIND,
+        CardId::APOTHEOSIS, CardId::APOTHEOSIS,
+    };
+    const std::vector<CardId> BATCH_10_TRANSMUTATION {
+        CardId::TRANSMUTATION, CardId::TRANSMUTATION,
+    };
+
     // ---- DECK CAP: Deck::MAX_SIZE (96), not CardManager::MAX_GROUP_SIZE (64) ------
     //
     // The three combat piles are NOT the constraint, even though CardManager::init does
@@ -791,6 +905,105 @@ int main() {
         };
         variants.push_back({batch9, 40, false, batch9Encounters});
         variants.push_back({batch9, 40, true,  batch9Encounters});
+
+        // Encounter filter for both batch-10 pairs (Cultist + Two Louse only), same as batch 9 —
+        // jaw_worm_horde.jsonl is at 48MB of a 100MB hard limit. Two Louse is what gives
+        // Whirlwind more than one target; Cultist is the single-monster control.
+        const std::vector<MonsterEncounter> batch10Encounters {
+            MonsterEncounter::CULTIST, MonsterEncounter::TWO_LOUSE,
+        };
+
+        // Variants 11/12: WHIRLWIND + APOTHEOSIS (10 starter + 3 + 11 enablers = 24 cards).
+        // Same structural reason as batches 7-9 for having its own pair: the full deck is 93
+        // cards and Deck::MAX_SIZE is 96. Variants 0-10 stay untouched.
+        //
+        // POOL-FREE BY CONSTRUCTION — no card here conjures out of CardPools.h — which is what
+        // lets MAYHEM be in the deck at all (see mayPlayHandCard).
+        //
+        // The eleven enablers each unlock code the batch's own cards cannot reach alone. X-cost
+        // is not one rule but a small lattice of them, and most cells need a second card:
+        //   HAVOC x2         the ONLY way to reach `freeToPlay == true`, i.e.
+        //                    `useEnergy = !(item.freeToPlay || c.freeToPlayOnce)` being FALSE.
+        //                    Havoc plays the draw pile's top card with
+        //                    energyOnUse = player.energy AND freeToPlay = true, so a Havoc'd
+        //                    Whirlwind hits X times for FREE. Without it that clause is dead and
+        //                    mis-transcribing it (always spend / never spend) is invisible.
+        //   MAYHEM x2        the only way to stack MAYHEM to 2, which is in turn the only way to
+        //                    have TWO card-queue items pending at once — and therefore the only
+        //                    way anything can change player.energy BETWEEN a card being queued
+        //                    and being used. That is what makes the asymmetry between the two
+        //                    X-cost cards observable: Transmutation RAISES energyOnUse when
+        //                    energy grew (`player.energy > item.energyOnUse`) and Whirlwind has
+        //                    no such line, so mutating Whirlwind to add one should show up here.
+        //   BLOODLETTING x2  the energy source for exactly that. 0-cost, does NOT exhaust (so it
+        //                    recycles and Mayhem can turn it up repeatedly), and gains 2 (3)
+        //                    energy unconditionally. SEEING_RED was the obvious alternative and
+        //                    is worse: it exhausts, so it can be turned up at most once per
+        //                    battle. It also widens the X distribution (energy 5, not 3).
+        //   DOUBLE_TAP x2    Whirlwind is an ATTACK, so Double Tap queuePurgeCard's a copy whose
+        //                    energyOnUse is INHERITED and whose ignoreEnergyTotal is TRUE. By
+        //                    then the first swing has spent all energy, so dropping
+        //                    ignoreEnergyTotal would clamp X to 0 and the copy would deal
+        //                    nothing — this is the only oracle for that flag.
+        //   SEARING_BLOW     the one card CardInstance::canUpgrade() keeps returning true for.
+        //                    Apotheosis therefore bumps its upgrade COUNT (specialData) every
+        //                    time, and its damage formula n(n+7)/2+12 makes that visible. Also
+        //                    the reason the second Apotheosis is not a no-op.
+        //   ENTRENCH         the only Skill whose upgraded energy cost both differs from its
+        //                    base cost and is non-zero (upgraded ? 1 : 2), so Apotheosis
+        //                    upgrading one in a pile is what exercises CardInstance::upgrade's
+        //                    tail ("cost and costForTurn both move when getEnergyCost changes").
+        //   WILD_STRIKE      shuffles WOUND into the DRAW pile. Two uses: Apotheosis must SKIP
+        //                    status cards (canUpgrade excludes STATUS/CURSE), and Havoc/Mayhem
+        //                    turning up a Wound exercises the canUse rejection path.
+        //
+        // Deliberately NOT added: a Vigor source (nothing registered has one, and the reference
+        // adds Vigor to Whirlwind's base damage *and* again inside calculateCardDamage), and
+        // CHEMICAL_X (relic, unregistered — its `+2` is a TODO on both sides).
+        std::vector<CardId> batch10a = BATCH_10_WHIRLWIND;
+        batch10a.push_back(CardId::HAVOC);
+        batch10a.push_back(CardId::HAVOC);
+        batch10a.push_back(CardId::MAYHEM);
+        batch10a.push_back(CardId::MAYHEM);
+        batch10a.push_back(CardId::BLOODLETTING);
+        batch10a.push_back(CardId::BLOODLETTING);
+        batch10a.push_back(CardId::DOUBLE_TAP);
+        batch10a.push_back(CardId::DOUBLE_TAP);
+        batch10a.push_back(CardId::SEARING_BLOW);
+        batch10a.push_back(CardId::ENTRENCH);
+        batch10a.push_back(CardId::WILD_STRIKE);
+        variants.push_back({batch10a, 40, false, batch10Encounters});
+        variants.push_back({batch10a, 40, true,  batch10Encounters});
+
+        // Variants 13/14: TRANSMUTATION (10 starter + 2 + 6 enablers = 18 cards). No MAYHEM
+        // here — see the BATCH_10 comment for why that pairing cannot be made replayable.
+        //
+        // Small on purpose, for the same reason batch 8's pair was: Transmutation dumps X cards
+        // into hand per play, so a large deck would bury them, and a fast-cycling draw pile is
+        // what makes END-OF-TURN COST RESET observable (a card zeroed for one turn has to come
+        // back around).
+        //   HAVOC x2       the only producer of `freeToPlay` for Transmutation specifically —
+        //                  a Havoc'd Transmutation conjures X cards and spends NO energy.
+        //                  Safe alongside Transmutation because mayPlayHandCard can check the
+        //                  draw and discard piles Havoc is about to read.
+        //   BLOODLETTING x2 0-cost, +2 (3) energy, no exhaust. Two jobs: it widens X (up to 5),
+        //                  and with hand already at 5 an X of 5 overflows the 10-card hand,
+        //                  which is the only way to reach moveToHandHelper's "hand full → put it
+        //                  in the discard pile instead" arm from Transmutation.
+        //   CORRUPTION     conjured colourless SKILLS arrive through moveToHandHelper, so
+        //                  Corruption's hook there applies to them. Also re-covers useCard's
+        //                  `!(corruption && skill)` energy clause (still only 2 examples).
+        //   ENTRENCH       a Skill whose upgraded cost differs and is non-zero, so the conjured
+        //                  cards are not the only thing with a non-trivial cost in the deck.
+        std::vector<CardId> batch10b = BATCH_10_TRANSMUTATION;
+        batch10b.push_back(CardId::HAVOC);
+        batch10b.push_back(CardId::HAVOC);
+        batch10b.push_back(CardId::BLOODLETTING);
+        batch10b.push_back(CardId::BLOODLETTING);
+        batch10b.push_back(CardId::CORRUPTION);
+        batch10b.push_back(CardId::ENTRENCH);
+        variants.push_back({batch10b, 40, false, batch10Encounters});
+        variants.push_back({batch10b, 40, true,  batch10Encounters});
     }
     for (const auto &v : variants) {
         // 10 starter cards are added by the GameContext constructor.
