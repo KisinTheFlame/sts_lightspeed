@@ -1279,8 +1279,23 @@ void BattleContext::useSkillCard() {
             break;
 
         case CardId::DARK_SHACKLES:
-            addToBot( Actions::DebuffEnemy<MS::STRENGTH>(t, up ? 15 : 9) );
-            if (monsters.arr[t].hasStatus<MS::ARTIFACT>()) {
+            // Two bugs fixed here.
+            //
+            // (1) SIGN. Monster::addDebuff<MS::STRENGTH> (Monster.h:354) is `strength +=
+            //     amount` — it does NOT negate. Every other Strength-reducing caller in this
+            //     project passes a negative amount (BattleContext.cpp:1300 DISARM,
+            //     Monster.cpp:394 / :454), so the positive literal here made Dark Shackles
+            //     GRANT +9 (+15) Strength: a debuff written as a buff.
+            // (2) ARTIFACT CONDITION WAS INVERTED. The old code applied SHACKLED only when
+            //     the target HAS Artifact. In the real game Artifact blocks the Strength
+            //     reduction outright, so the "give it back at end of turn" bookkeeping must
+            //     only be queued when Artifact is ABSENT — otherwise Artifact eats the
+            //     reduction and SHACKLED then hands out free Strength.
+            //     Note the check reads state at PLAY time, before the queued DebuffEnemy runs
+            //     and consumes the Artifact charge; that ordering is the reference's own shape
+            //     and is preserved.
+            addToBot( Actions::DebuffEnemy<MS::STRENGTH>(t, -(up ? 15 : 9)) );
+            if (!monsters.arr[t].hasStatus<MS::ARTIFACT>()) {
                 addToBot( Actions::BuffEnemy<MS::SHACKLED>(t, up ? 15 : 9) );
             }
             break;

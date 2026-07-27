@@ -636,7 +636,13 @@ Action Actions::ViolenceAction(int count) { // todo a faster algorithm for inser
         int i = 0;
         for (; i < count; ++i) {
             if (attackIdxList.size()-i <= 0) {
-                return;
+                // `break`, not `return`. A `return` here skipped the whole
+                // std::sort + removeFromDrawPileAtIdx tail below, so whenever the draw pile
+                // held FEWER attacks than `count` (3, or 4 upgraded) the cards already moved
+                // into the hand were ALSO left sitting in the draw pile — Violence duplicated
+                // them out of thin air. `i` is already "how many were actually moved", which
+                // is exactly what the removal tail is written against.
+                break;
             }
 
             java::Collections::shuffle(attackIdxList.begin()+i, attackIdxList.end(), java::Random(bc.shuffleRng.randomLong()));
@@ -1106,7 +1112,13 @@ Action Actions::HandOfGreedAction(int idx, int damage, bool upgraded) {
         if (m.isDeadOrEscaped()) {
             return;
         }
-        bc.monsters.arr[idx].damage(bc, damage);
+        // `attacked`, not `damage`. Hand of Greed is an ATTACK card and goes through
+        // DamageAction in the real game, so the whole onAttacked chain (Curl Up, Sharp Hide,
+        // Thorns, ...) must fire. Monster::damage skips all of it. This action is otherwise
+        // structurally IDENTICAL to FeedAction above (isDeadOrEscaped at +3, the damage call
+        // at +6, the reward at +14) which uses `attacked`, as does ReaperAction — the bare
+        // `damage` here was a copy-paste slip.
+        bc.monsters.arr[idx].attacked(bc, damage);
 
         const bool effectTriggered = !m.hasStatus<MS::MINION>()
                 && !m.isAlive()
