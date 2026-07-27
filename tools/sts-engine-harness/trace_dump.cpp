@@ -551,7 +551,7 @@ int main() {
         variants.push_back({focused, 40, false});
         variants.push_back({focused, 40, true});
 
-        // Variants 5/6: a FOCUSED deck for batch 7 (10 starter + batch 7 + 4 enablers = 20).
+        // Variants 5/6: a FOCUSED deck for batch 7 (10 starter + batch 7 + 8 enablers = 24).
         //
         // Why batch 7 is NOT folded into the full deck: it no longer fits. The full deck is
         // 10 starter + batches 1-6 = 93 cards, and Deck::MAX_SIZE is 96 (see the DECK CAP note
@@ -563,27 +563,47 @@ int main() {
         // variants 0-4 untouched instead keeps every mutation-test figure already measured on
         // them valid, and gives batch 7 far better coverage density than 96 cards would.
         //
-        // The four enablers are picked to reach the new code, not to pad the deck:
-        //   ARMAMENTS    — the only in-combat upgrade source. It is what drives SEARING_BLOW's
-        //                  specialData past 1, and it is the only way to reach
-        //                  CardInstance::upgrade's tail (cost/costForTurn rewritten to the
-        //                  upgraded energy cost) while CORRUPTION is up, which is in turn the
-        //                  only way useCard's `!(corruption && skill)` energy clause matters.
-        //   BLOODLETTING — self damage on demand, so BLOOD_FOR_BLOOD's cost actually walks down
-        //                  from 4 early in a battle rather than only after monster hits. It is
-        //                  itself 0-cost, which also exercises onBuffCorruption's `cost > 0`
-        //                  filter taking the false branch.
-        //   IMMOLATE     — puts Burn in the discard pile; at 20 cards a reshuffle brings it to
-        //                  hand within a few turns, so Player::damage's Intangible clamp (a
-        //                  different code path from Monster::calculateDamageToPlayer's) is
-        //                  reachable while APPARITION is up.
-        //   SHRUG_IT_OFF — a plain 1-cost skill, so CORRUPTION has something to zero besides
+        // The enablers are picked to reach specific new code, not to pad the deck. The
+        // ENTRENCH pair and the second CORRUPTION / APPARITION were added after a first
+        // mutation-test pass came back 0 on the branches noted below.
+        //   ARMAMENTS      the only in-combat upgrade source. Drives SEARING_BLOW's
+        //                  specialData past 1, and is the only way to reach
+        //                  CardInstance::upgrade's tail while CORRUPTION is up. Measured on
+        //                  the first pass: 618 plays, 206 of them with Corruption already up.
+        //   ENTRENCH x2    ENTRENCH is the ONLY Skill in the whole card table whose upgraded
+        //                  energy cost both differs from its base cost AND is non-zero
+        //                  (`upgraded ? 1 : 2`). onBuffCorruption zeroes every Skill already
+        //                  in a pile, so the only way a Skill can have costForTurn > 0 while
+        //                  Corruption is up is to upgrade one afterwards — which makes
+        //                  ENTRENCH the sole oracle for useCard's `!(corruption && skill)`
+        //                  energy clause, for CardManager::resetAttributesAtEndOfTurn, and
+        //                  for MadnessAction's costForTurn-vs-cost branch split. Two copies
+        //                  because the chain needs Armaments AND Entrench in the same hand
+        //                  with Corruption already up.
+        //   BLOODLETTING   self damage on demand, so BLOOD_FOR_BLOOD's cost walks down from 4
+        //                  early rather than only after monster hits. It is itself 0-cost,
+        //                  which also drives onBuffCorruption's `cost > 0` filter false.
+        //   IMMOLATE       puts Burn in the discard pile; a reshuffle brings it to hand within
+        //                  a few turns, so Player::damage's Intangible clamp (a different code
+        //                  path from Monster::calculateDamageToPlayer's) can be reached while
+        //                  APPARITION is up.
+        //   SHRUG_IT_OFF   a plain 1-cost Skill, so CORRUPTION has something to zero besides
         //                  the starter Defends.
+        //   CORRUPTION #2  Corruption is a bool status (setHasStatus, never in statusMap), so
+        //                  playing a second one must NOT stack to 2. With one copy that is
+        //                  unobservable — 391 of 1200 traces played it, all exactly once.
+        //   APPARITION #2  Intangible was up for zero of the 207 frames that had a Burn in
+        //                  hand, so Player::damage's clamp had no oracle. More Apparition
+        //                  plays is the only lever on that conjunction.
         std::vector<CardId> batch7 = BATCH_7;
         batch7.push_back(CardId::ARMAMENTS);
         batch7.push_back(CardId::BLOODLETTING);
         batch7.push_back(CardId::IMMOLATE);
         batch7.push_back(CardId::SHRUG_IT_OFF);
+        batch7.push_back(CardId::ENTRENCH);
+        batch7.push_back(CardId::ENTRENCH);
+        batch7.push_back(CardId::CORRUPTION);
+        batch7.push_back(CardId::APPARITION);
         variants.push_back({batch7, 40, false});
         variants.push_back({batch7, 40, true});
     }
