@@ -1057,7 +1057,7 @@ int main() {
         };
 
         // Variants 15/16: PERFECTED_STRIKE + CLASH + HAND_OF_GREED
-        // (10 starter + 6 + 8 enablers = 24 cards). Structural reason for its own pair is the
+        // (10 starter + 6 + 10 enablers = 26 cards). Structural reason for its own pair is the
         // same as batches 7-10: the full deck is 93 and Deck::MAX_SIZE is 96.
         //
         // The enablers exist to make strikeCount MOVE. Its two hooks live at very specific
@@ -1085,6 +1085,22 @@ int main() {
         //                    the deck the reject arm of the new gate is far rarer.
         //   SWIFT_STRIKE     a 0-cost Strike card. Cheap counter fodder, and being 0-cost it
         //                    never competes for the energy the batch's own cards want.
+        //   TRUE_GRIT x2     ADDED AFTER MEASURING, and the measurement is worth recording
+        //                    because FIEND_FIRE turned out to be the wrong tool for the
+        //                    decrement half. With Fiend Fire as the only strike-exhauster,
+        //                    Perfected Strike was played after a strike had left combat only
+        //                    15 times out of 125 plays, and deleting notifyRemoveFromCombat
+        //                    failed a mere 2 replays. The reason is structural: Fiend Fire
+        //                    exhausts the ENTIRE hand, which includes the Perfected Strike
+        //                    that would have observed the drop. True Grit exhausts exactly ONE
+        //                    card (random un-upgraded, chosen when upgraded) for 1 energy, so
+        //                    the counter falls while a Perfected Strike is still sitting in
+        //                    hand. It also front-loads the exhaust pile with Strikes on turn 1,
+        //                    which is what finally lets EXHUME pull one back out —
+        //                    exhumePulledStrike was 0 for 154 Exhume plays before this.
+        //                    ⚠ Its own self-exhaust happens in OnAfterCardUsed, i.e. AFTER the
+        //                    ExhaustRandomCardInHand it queues, so the hand card really is
+        //                    exhaust-pile index 0 and the harness's lowest-index pick finds it.
         //   HAVOC x2         the autoplay path. playTopCardInDrawPile hands the choice to the
         //                    reference, so a Clash on top of the draw pile is run through
         //                    canUse with inAutoplay = true — and when the hand is not all
@@ -1100,12 +1116,14 @@ int main() {
         batch11a.push_back(CardId::DUAL_WIELD);
         batch11a.push_back(CardId::WILD_STRIKE);
         batch11a.push_back(CardId::SWIFT_STRIKE);
+        batch11a.push_back(CardId::TRUE_GRIT);
+        batch11a.push_back(CardId::TRUE_GRIT);
         batch11a.push_back(CardId::HAVOC);
         batch11a.push_back(CardId::HAVOC);
         variants.push_back({batch11a, 40, false, batch11Encounters});
         variants.push_back({batch11a, 40, true,  batch11Encounters});
 
-        // Variants 17/18: THE_BOMB (10 starter + 2 + 6 enablers = 18 cards).
+        // Variants 17/18: THE_BOMB (10 starter + 2 + 8 enablers = 20 cards).
         //
         // Damage-POOR on purpose — that is the whole point of the pair. The only attacks in it
         // are the five starter Strikes and Bash, so ~1.9 attacks per 5-card hand, and the
@@ -1121,6 +1139,22 @@ int main() {
         //                      random un-upgraded, chosen (a screen) when upgraded. It actively
         //                      REMOVES Strikes from the battle, which slows the clock further,
         //                      and doubles as a second exhaust source.
+        //   PURITY x2          ADDED AFTER MEASURING. First pass: the un-upgraded pair covered
+        //                      the timer well (deleting the detonation failed 196 replays), but
+        //                      the UPGRADED damage (`up ? 50 : 40`) failed only 1 — because by
+        //                      the third turn end the Cultist was already low enough that 40
+        //                      and 50 are indistinguishable. Purity is 0-cost and exhausts the
+        //                      lowest 3 (5) hand cards, and the harness's multi-select always
+        //                      picks the lowest indices — so it strips the deck's only damage
+        //                      (the five starter Strikes and Bash) out of the battle entirely.
+        //                      The Bomb then detonates against a near-full-HP Cultist (48-54),
+        //                      where 40 leaves it alive and 50 can kill it.
+        //                      ⚠ Second effect, deliberate: between Purity x2, True Grit x2 and
+        //                      the self-exhausting Impervious/Ghostly Armor, up to 12 of the 20
+        //                      cards leave combat, so hand+draw+discard really can hit ZERO
+        //                      with a bomb still ticking. That is the only way to reach
+        //                      executeActions' `player.bomb1 || bomb2 || bomb3` clause in the
+        //                      can't-win check.
         // Two copies of THE_BOMB so both `bomb3 += amount` twice in one turn (a single 80/100
         // slot, not two timers) and "a second bomb lands while the first is still shifting"
         // actually happen.
@@ -1131,6 +1165,8 @@ int main() {
         batch11b.push_back(CardId::GHOSTLY_ARMOR);
         batch11b.push_back(CardId::TRUE_GRIT);
         batch11b.push_back(CardId::TRUE_GRIT);
+        batch11b.push_back(CardId::PURITY);
+        batch11b.push_back(CardId::PURITY);
         variants.push_back({batch11b, 40, false, batch11Encounters});
         variants.push_back({batch11b, 40, true,  batch11Encounters});
     }
