@@ -680,7 +680,17 @@ void Player::applyStartOfTurnPostDrawPowers(BattleContext &bc) {
 
         switch (pair.first) {
             case PS::BRUTALITY:
-                bc.addToBot( Actions::PlayerLoseHp(pair.second) );
+                // The `true` is a fix, not a transcription of the original line, which read
+                // `Actions::PlayerLoseHp(pair.second)`. Actions::PlayerLoseHp's second
+                // parameter is `bool selfDamage = false` (Actions.h:64), and selfDamage is
+                // the only thing Player::hpWasLost checks before granting RUPTURE's Strength
+                // (Player.cpp:283). Every *card* call site passes it explicitly
+                // (BattleContext.cpp 952 / 1080 / 1268 / 1388 / 1409 / 1933, and :369 in this
+                // very file for COMBUST) — Brutality was the lone omission, so Rupture never
+                // fired off it. In the real game Brutality is a LoseHPAction(owner, owner, …)
+                // whose source is the player, so onLoseHp runs and Rupture DOES trigger;
+                // Brutality + Rupture is a well-known Ironclad pairing.
+                bc.addToBot( Actions::PlayerLoseHp(pair.second, true) );
                 bc.addToBot( Actions::DrawCards(pair.second) );
                 break;
 
