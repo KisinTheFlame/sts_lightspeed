@@ -452,12 +452,17 @@ int main() {
     // drawn as a matter of course; IMMOLATE's Burn goes to the discard pile and only reaches
     // hand after a reshuffle (see the variant 3/4 note above).
     //
-    // FIRE_BREATHING appears TWICE on purpose. Status cards are plentiful, but the *power*
-    // has to be up when one is drawn, and with one copy in a 92-card deck it was played in
-    // only ~76 traces, of which ~7 went on to draw a status card — measured: deleting the
-    // whole status-draw hook failed 7 replays, and making its damage synchronous failed 1.
-    // A single example is one deck change away from being a blind spot, so the copy count
-    // doubles the number of traces where the power is up at all.
+    // FIRE_BREATHING appears TWICE. Measured, not assumed — and the measurement is worth
+    // recording because it did NOT do what was expected:
+    //   * 1 copy (92-card deck): played 47/29 times; deleting the status-draw hook failed
+    //     7 replays, making its damage synchronous failed 1.
+    //   * 2 copies (93-card deck): played 101/69 times; the same two mutations fail 5 and 1.
+    // Doubling the copies doubled how often the power is UP, but not how often a Status card
+    // is drawn WHILE it is up: more Fire Breathing damage ends battles sooner, which removes
+    // the later turns that would have drawn one. The copy is kept because the card's own
+    // coverage doubled (and the "played an Attack" mis-transcription guard went 61 -> 128),
+    // but the status-draw hook stays thin at ~5 and is recorded as such in the engine repo's
+    // TODOS.md. Do not "fix" it by adding a third copy; the limit is battle length.
     const std::vector<CardId> BATCH_6 {
         CardId::FLAME_BARRIER, CardId::FIRE_BREATHING, CardId::FIRE_BREATHING, CardId::RAGE,
         CardId::JUGGERNAUT, CardId::RUPTURE, CardId::SENTINEL, CardId::PANIC_BUTTON,
