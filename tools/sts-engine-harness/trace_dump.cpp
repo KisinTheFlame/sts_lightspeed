@@ -262,12 +262,12 @@ static bool isReplayablePotion(Potion p) {
 // batch-8 variants not yet added — the whole file reproduced byte for byte.
 static bool isReplayableCard(CardId id) {
     switch (id) {
-        // Batch 12, plus the ones the reference itself never implemented well enough
-        // to be an oracle. (Batch 9's HAVOC / MAYHEM / DOUBLE_TAP / DUAL_WIELD, batch 10's
-        // WHIRLWIND / TRANSMUTATION / APOTHEOSIS and batch 11's PERFECTED_STRIKE / CLASH /
-        // HAND_OF_GREED / THE_BOMB were removed from this list when they were registered.)
-        case CardId::DARK_SHACKLES:     // batch 12 (two reference-side bugs to fix first)
-        case CardId::VIOLENCE:          // batch 12 (reference-side bug: duplicates cards)
+        // What is left is the cards the reference itself never implemented well enough to be
+        // an oracle, plus four that need mechanisms outside the Ironclad+colourless scope.
+        // (Batch 9's HAVOC / MAYHEM / DOUBLE_TAP / DUAL_WIELD, batch 10's WHIRLWIND /
+        // TRANSMUTATION / APOTHEOSIS, batch 11's PERFECTED_STRIKE / CLASH / HAND_OF_GREED /
+        // THE_BOMB and batch 12's DARK_SHACKLES / VIOLENCE were removed from this list when
+        // they were registered.)
         case CardId::FORETHOUGHT:       // reference's upgraded branch is commented out
         case CardId::MAGNETISM:
         case CardId::ENLIGHTENMENT:
@@ -742,6 +742,24 @@ int main() {
         CardId::THE_BOMB, CardId::THE_BOMB,
     };
 
+    // Batch 12 — the last two Ironclad/colourless cards the reference can be an oracle for.
+    // Both needed a reference-side bug fixed first (see the fix commit that precedes this one):
+    //
+    //   DARK_SHACKLES -> DebuffEnemy<STRENGTH>(-(up?15:9)) plus, when the target has NO
+    //                    Artifact, BuffEnemy<SHACKLED>(up?15:9). The Strength comes back in
+    //                    Monster::applyEndOfTurnTriggers (Monster.cpp:63), a whole time step
+    //                    this repo had never exercised: BattleContext::applyEndOfRoundPowers
+    //                    runs it in a FIRST monster loop, before player.applyAtEndOfRoundPowers
+    //                    and before the SECOND monster loop that holds Ritual / Weak / Vuln.
+    //   VIOLENCE      -> ViolenceAction: scan the draw pile for Attacks (one cardRandomRng roll
+    //                    per attack after the first, and the roll RESULT is used — it picks the
+    //                    insert position), then per fetched card shuffle the list's [i, end)
+    //                    tail with java::Random(shuffleRng.randomLong()) and take list[i].
+    const std::vector<CardId> BATCH_12 {
+        CardId::DARK_SHACKLES, CardId::DARK_SHACKLES, CardId::DARK_SHACKLES,
+        CardId::VIOLENCE, CardId::VIOLENCE, CardId::VIOLENCE,
+    };
+
     // ---- DECK CAP: Deck::MAX_SIZE (96), not CardManager::MAX_GROUP_SIZE (64) ------
     //
     // The three combat piles are NOT the constraint, even though CardManager::init does
@@ -1169,6 +1187,57 @@ int main() {
         batch11b.push_back(CardId::PURITY);
         variants.push_back({batch11b, 40, false, batch11Encounters});
         variants.push_back({batch11b, 40, true,  batch11Encounters});
+
+        // Variants 19/20: BATCH_12 (10 starter + 6 + 4 enablers = 20 cards). Its own pair for
+        // the same structural reason as batches 7-11: the full deck is 93 and Deck::MAX_SIZE
+        // is 96. Same two encounters as batches 9-11, same reason (size: jaw_worm_horde.jsonl
+        // sits at 46MB of a 100MB hard limit, and these are card branches, not monster ones).
+        //
+        // THREE copies of each of the batch's two cards, and the count for VIOLENCE is the
+        // load-bearing part of this deck:
+        //   VIOLENCE x3   Every play RIPS 3 (4 upgraded) Attacks OUT of the draw pile, so
+        //                 consecutive plays walk the draw pile's attack count DOWN through
+        //                 2, 1 and 0. That is the only way to reach the fixed early-exit —
+        //                 the `attackIdxList.size()-i <= 0` arm that used to `return` and
+        //                 duplicate cards — and the `attackIdxList.empty()` return above it.
+        //                 One copy would practically always find >= 3 Attacks (the 10 starter
+        //                 cards alone hold 6) and both arms would be structurally dead.
+        //   DARK_SHACKLES x3
+        //                 Needs to land on MANY DIFFERENT TURNS, because what it proves is a
+        //                 time step, not a number: Strength goes to -9 (-15), the Cultist's
+        //                 Dark Strike is computed off that reduced value, and then
+        //                 applyEndOfTurnTriggers hands the Strength back and clears SHACKLED.
+        //                 Three copies in a 20-card deck means roughly one per draw cycle.
+        //
+        // The deck is deliberately damage-POOR (same tactic as variants 17/18, different
+        // reason). Only the 5 starter Strikes and Bash deal damage, so Cultist survives many
+        // turns — and the draw pile therefore CYCLES several times, which is what spreads
+        // Violence's plays across "draw pile full of Attacks" and "draw pile nearly empty".
+        // A fast kill would have every Violence resolve on turn 1 or 2 with 4+ Attacks
+        // available, i.e. exactly the case the un-patched code got right.
+        //   IMPERVIOUS x2      2 energy for 30 (40) Block, exhausts. Pure survivability with
+        //                      no damage, and being one-shot it cannot trivialise the late
+        //                      battle.
+        //   GHOSTLY_ARMOR x2   1 energy for 10 (13) Block, ethereal so it exhausts itself
+        //                      instead of clogging the hand.
+        // ⚠ Second, deliberate effect of the four enablers plus the batch's own two exhausting
+        // cards: up to 10 of the 20 cards LEAVE combat over a long battle, so the late-battle
+        // deck is just the 10 starter cards and the draw pile turns over every two turns. That
+        // is what makes the low-attack-count states common rather than freakish.
+        //
+        // Replayability: no MAYHEM and no HAVOC, and nothing here conjures out of CardPools.h,
+        // so mayPlayHandCard's autoplay arms never come into play and the deck is trivially
+        // clean for isReplayableCard.
+        const std::vector<MonsterEncounter> batch12Encounters {
+            MonsterEncounter::CULTIST, MonsterEncounter::TWO_LOUSE,
+        };
+        std::vector<CardId> batch12 = BATCH_12;
+        batch12.push_back(CardId::IMPERVIOUS);
+        batch12.push_back(CardId::IMPERVIOUS);
+        batch12.push_back(CardId::GHOSTLY_ARMOR);
+        batch12.push_back(CardId::GHOSTLY_ARMOR);
+        variants.push_back({batch12, 40, false, batch12Encounters});
+        variants.push_back({batch12, 40, true,  batch12Encounters});
     }
     for (const auto &v : variants) {
         // 10 starter cards are added by the GameContext constructor.
