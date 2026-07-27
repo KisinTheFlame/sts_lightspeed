@@ -222,6 +222,55 @@ static bool isReplayablePotion(Potion p) {
     }
 }
 
+// Only cards sts-combat has a CARD_RULES entry for. Same criterion, and the same reason, as
+// isReplayablePotion above: playing an unregistered card makes the trace UNREPLAYABLE (the TS
+// side throws "暂未登记卡牌行为") rather than merely unverified.
+//
+// Before batch 8 this gate was unnecessary. Every card that could reach the hand came either
+// from the deck — and the deck variants below only ever hold registered cards — or from a
+// status/curse generator (Burn / Wound / Dazed), none of which is playable in the first place.
+// Batch 8's five cards break that: Chrysalis / Metamorphosis / Discovery / Jack of All Trades /
+// Infernal Blade pull card DEFINITIONS out of CombatTypeCardPool, CombatCardPool and
+// CombatColorlessCardPool (CardPools.h), which between them name 104 distinct cards. 18 of
+// those are not registered in sts-combat, and they are listed here.
+//
+// This is a BLOCKLIST rather than a whitelist on purpose. The set of cards that can enter
+// combat is exactly (deck ∪ those three pools ∪ the status generators), so enumerating the
+// unregistered members of the pools is complete by construction; and if a future batch ever
+// makes the list stale, the failure is LOUD (the TS replay throws on the very first trace that
+// plays one) instead of silently shrinking coverage the way a missing whitelist entry would.
+//
+// Adding the gate is a no-op for variants 0-6: their decks contain only registered cards, and
+// this was verified by running tools/regen-traces.sh --check with the gate in place and the
+// batch-8 variants not yet added — the whole file reproduced byte for byte.
+static bool isReplayableCard(CardId id) {
+    switch (id) {
+        // Batch 9 (play-from-pile / play-a-copy) and 11/12, plus the four the reference itself
+        // never implemented well enough to be an oracle.
+        case CardId::PERFECTED_STRIKE:  // batch 11 (needs strikeCount)
+        case CardId::CLASH:             // batch 11 (canUse: hand must be all attacks)
+        case CardId::WHIRLWIND:         // X-cost; also the wiring test's "unmigrated" sample
+        case CardId::TRANSMUTATION:     // X-cost (batch 10)
+        case CardId::HAVOC:             // batch 9
+        case CardId::MAYHEM:            // batch 9
+        case CardId::DOUBLE_TAP:        // batch 9
+        case CardId::DUAL_WIELD:        // batch 9
+        case CardId::HAND_OF_GREED:     // batch 11
+        case CardId::THE_BOMB:          // batch 11
+        case CardId::DARK_SHACKLES:     // batch 12 (two reference-side bugs to fix first)
+        case CardId::VIOLENCE:          // batch 12 (reference-side bug: duplicates cards)
+        case CardId::FORETHOUGHT:       // reference's upgraded branch is commented out
+        case CardId::MAGNETISM:
+        case CardId::ENLIGHTENMENT:
+        case CardId::APOTHEOSIS:
+        case CardId::PANACHE:
+        case CardId::SADISTIC_NATURE:
+            return false;
+        default:
+            return true;
+    }
+}
+
 // Card-select screens use a different action space. Enumerate what the reference
 // itself offers and take the lowest-index option, so the choice is deterministic and
 // expressible in the trace.
@@ -273,6 +322,7 @@ static bool pickAction(const BattleContext &bc, Step &out) {
         if (a.isValidAction(bc)) { out = {"potion", i, target}; return true; }
     }
     for (int i = 0; i < bc.cards.cardsInHand; ++i) {
+        if (!isReplayableCard(bc.cards.hand[i].getId())) continue;
         search::Action a(search::ActionType::CARD, i, target);
         if (a.isValidAction(bc)) { out = {"card", i, target}; return true; }
     }
@@ -484,6 +534,22 @@ int main() {
         CardId::MADNESS, CardId::CORRUPTION, CardId::APPARITION,
     };
 
+    // Batch 8 — the random-card-pool batch. All five pick a card DEFINITION out of a combat
+    // card pool (CardPools.h) and therefore consume cardRandomRng:
+    //
+    //   CHRYSALIS          -> PutRandomCardsInDrawPile(SKILL,  up?5:3), cost 0 for the COMBAT
+    //   METAMORPHOSIS      -> PutRandomCardsInDrawPile(ATTACK, up?5:3), cost 0 for the COMBAT
+    //   DISCOVERY          -> DiscoveryAction(INVALID, 1): a 3-card select screen, cost 0 this TURN
+    //   JACK_OF_ALL_TRADES -> 1 (2) random colorless cards to hand, at FULL cost
+    //   INFERNAL_BLADE     -> 1 random Attack to hand, cost 0 this TURN
+    //
+    // This is the batch that finally makes CardInstance::cost and ::costForTurn diverge — see
+    // the isReplayableCard note above for why the policy needs a gate now.
+    const std::vector<CardId> BATCH_8 {
+        CardId::CHRYSALIS, CardId::METAMORPHOSIS, CardId::DISCOVERY,
+        CardId::JACK_OF_ALL_TRADES, CardId::INFERNAL_BLADE,
+    };
+
     // ---- DECK CAP: Deck::MAX_SIZE (96), not CardManager::MAX_GROUP_SIZE (64) ------
     //
     // The three combat piles are NOT the constraint, even though CardManager::init does
@@ -606,6 +672,44 @@ int main() {
         batch7.push_back(CardId::APPARITION);
         variants.push_back({batch7, 40, false});
         variants.push_back({batch7, 40, true});
+
+        // Variants 7/8: a FOCUSED deck for batch 8 (10 starter + batch 8's 5 + 3 enablers = 18 cards).
+        //
+        // Same reason batch 7 got its own pair: the full deck is 93 cards and Deck::MAX_SIZE is
+        // 96, so batch 8 does not fit there either. Variants 0-6 stay untouched, which keeps
+        // every mutation figure already measured on them valid.
+        //
+        // A SMALL deck matters more here than in any previous batch. Chrysalis and Metamorphosis
+        // inject 3 (5) extra cards into the draw pile per play, so a large deck would both bury
+        // the batch's own cards and make each snapshot enormous. At 18 cards the draw pile
+        // cycles every couple of turns, which is also what makes end-of-turn cost RESET
+        // observable: a card whose costForTurn was zeroed for one turn has to come back around.
+        //
+        // The extra copies and the one enabler are picked to reach specific new code:
+        //   INFERNAL_BLADE #2   the sole producer of "costForTurn == 0 while cost > 0" on a card
+        //                       that is neither a Skill nor deck-owned. It is what separates
+        //                       playCard-reads-costForTurn from playCard-reads-cost, and what
+        //                       gives CardManager::resetAttributesAtEndOfTurn something to do —
+        //                       both were 0-example blind spots after batch 7.
+        //   JACK_OF_ALL_TRADES #2  the only card here that adds a card to hand at FULL cost, via
+        //                       moveToHandHelper. That is the exact path batch 7 recorded as a
+        //                       blind spot ("Corruption's moveToHandHelper hook has nothing to
+        //                       do until cards are conjured after Corruption lands"). ~6 of the
+        //                       34 colorless cards are Skills costing >= 1, so two copies make
+        //                       the conjunction (Corruption up AND a costly Skill conjured)
+        //                       routine rather than rare.
+        //   CORRUPTION          the other half of that conjunction. It also re-covers useCard's
+        //                       `!(corruption && skill)` energy clause, which batch 7 measured
+        //                       at only 2 examples — all five batch-8 cards are Skills.
+        //
+        // Deliberately NOT added: a second CHRYSALIS / METAMORPHOSIS. Their coverage is already
+        // high with one copy, and each extra play grows every subsequent snapshot in the trace.
+        std::vector<CardId> batch8 = BATCH_8;
+        batch8.push_back(CardId::INFERNAL_BLADE);
+        batch8.push_back(CardId::JACK_OF_ALL_TRADES);
+        batch8.push_back(CardId::CORRUPTION);
+        variants.push_back({batch8, 40, false});
+        variants.push_back({batch8, 40, true});
     }
     for (const auto &v : variants) {
         // 10 starter cards are added by the GameContext constructor.
