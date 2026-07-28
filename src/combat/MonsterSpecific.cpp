@@ -1015,6 +1015,28 @@ void Monster::takeTurn(BattleContext &bc) {     // todo, maybe for monsters that
         // ************ RED SLAVER ************
 
         case MMID::RED_SLAVER_ENTANGLE:
+            // MISSING WRITE, restored. `miscInfo` IS this monster's "used Entangle" flag:
+            // getMoveForRoll opens the RED_SLAVER case with
+            //     const bool usedEntangle = miscInfo;          (MonsterSpecific.cpp:2777)
+            // and then gates two branches on it — but NOTHING in the whole project ever
+            // assigned it, so the flag was pinned at false forever. Two consequences:
+            //   (1) `roll >= 75 && !usedEntangle` degenerated to `roll >= 75`, so Red Slaver
+            //       could re-cast Entangle over and over (measured on variant-0 traces: one
+            //       seed cast it 8 times in a single fight). The real game's SlaverRed sets
+            //       usedEntangle = true in its Entangle branch and never entangles twice.
+            //   (2) `roll >= 50 && usedEntangle && !lastTwoMoves(STAB)` was dead code.
+            // Same signature as the IMPATIENCE / DISARM / TRIP slips already fixed in this
+            // repo: a variable that is declared and read but never written.
+            //
+            // ⚠ UNVERIFIED THRESHOLD. Restoring the write brings the `roll >= 50` branch
+            // back to life, and that 50 has never been checked against the real game — it is
+            // suspected to be 55 there, and we have no oracle that can decide it (this repo
+            // IS the oracle). Restoring the flag is still strictly closer to the real game
+            // than leaving Entangle unbounded: the only divergence that can remain is
+            // roll in [50, 55), whereas the unbounded version diverges on every repeat cast.
+            // Do not "clean up" this comment when the threshold is eventually confirmed —
+            // update it.
+            miscInfo = 1; // usedEntangle = true
             bc.addToBot(Actions::DebuffPlayer<PS::ENTANGLED>(1));
             bc.addToBot(Actions::RollMove(idx));
             break;
