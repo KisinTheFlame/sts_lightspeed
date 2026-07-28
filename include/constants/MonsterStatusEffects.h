@@ -148,7 +148,24 @@ namespace sts {
         "THORNS",
         "TIME_WARP",
 
+        // FIXED: REACTIVE was in the wrong slot, so this table was misaligned with the enum
+        // for indices 32..38.
+        //
+        // The array is indexed BY THE ENUM VALUE (`monsterStatusEnumStrings[(int)s]`, used by
+        // SimHelpers.cpp:17 and by tools/sts-engine-harness/trace_dump.cpp:105), so every entry
+        // has to sit at its own enum's index. MonsterStatus declares
+        //     INVINCIBLE, REACTIVE, SHARP_HIDE,   // "unique powers 2", indices 31..33
+        //     ASLEEP, BARRICADE, MINION, MINION_LEADER, PAINFUL_STABS, REGROW, SHIFTING, STASIS
+        // but REACTIVE used to be listed down between PAINFUL_STABS and REGROW. That shifted
+        // seven entries up by one: ASLEEP(34) printed as "BARRICADE", SHARP_HIDE(33) as
+        // "ASLEEP", REACTIVE(32) as "SHARP_HIDE", and so on. Entries 0..31 and 39..42 happened
+        // to land back in place, which is why nothing noticed until a monster with ASLEEP
+        // (Lagavulin) was dumped.
+        //
+        // The sibling table `enemyStatusStrings` right above has the same entries IN THE
+        // CORRECT ORDER — that is the tell that this was a typo and not a deliberate ordering.
         "INVINCIBLE",
+        "REACTIVE",
         "SHARP_HIDE",
 
         "ASLEEP",
@@ -156,7 +173,6 @@ namespace sts {
         "MINION",
         "MINION_LEADER",
         "PAINFUL_STABS",
-        "REACTIVE",
         "REGROW",
         "SHIFTING",
         "STASIS",
