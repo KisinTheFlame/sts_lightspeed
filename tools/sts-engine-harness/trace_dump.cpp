@@ -1290,6 +1290,7 @@ int main() {
         // than 7 and they carry their own asc17/18/19 move branches, which is a batch of its
         // own. ⚠ The next batch must APPEND ANOTHER VARIANT for them rather than extend this
         // one's encounter list — growing this list shifts every traceIdx after it.
+        // (Batch 22 did exactly that: see variant 22 immediately below.)
         const std::vector<MonsterEncounter> asc19Encounters {
             MonsterEncounter::CULTIST,          MonsterEncounter::JAW_WORM,
             MonsterEncounter::JAW_WORM_HORDE,   MonsterEncounter::TWO_LOUSE,
@@ -1300,6 +1301,42 @@ int main() {
             MonsterEncounter::EXORDIUM_WILDLIFE, MonsterEncounter::GREMLIN_GANG,
         };
         variants.push_back({BATCH_1, 40, false, asc19Encounters, 19});
+
+        // Variant 22: ASCENSION 19, batch-1 deck, the six act-1 ELITE and BOSS encounters.
+        // Batch 22 of the engine repo. Same deck, same seed count, same level as variant 21 —
+        // only the encounter list differs.
+        //
+        // WHY A SEPARATE VARIANT RATHER THAN SIX MORE ENTRIES IN asc19Encounters. traceIdx is
+        // assigned by walking variants x encounters in declaration order, and it drives the
+        // relic/potion rotation. Growing variant 21's list would shift every traceIdx after
+        // it and invalidate all 14 committed @asc19 files. Appending a whole variant only
+        // adds indices at the end. Same rule as the frozen `encounters` list above.
+        //
+        // WHY THEY WERE HELD BACK FROM VARIANT 21. Their ascension tiers are on different
+        // thresholds than the hallway monsters', and every one of the three families is a
+        // separate number:
+        //   * HP:      normal `asc>=7`, ELITE `asc>=8`, BOSS `asc>=9`
+        //              (Monster::initHp, MonsterSpecific.cpp:26-128 — three groups of cases
+        //              sitting side by side in one switch);
+        //   * damage:  hallwayIdx  = getTriIdx(asc, 2, 17)
+        //              eliteDiffIdx= getTriIdx(asc, 3, 18)
+        //              bossDiffIdx = getTriIdx(asc, 4, 19)   (takeTurn's prologue, :337-348).
+        // So this variant is what puts asc3/asc4/asc18/asc19 branches under an oracle at all;
+        // level 19 clears the highest of them (bossDiffIdx's 19) by exactly one.
+        //
+        // ⚠ ONE OF THESE SIX BRANCHES IS SHARP-EDGED: Gremlin Nob's asc18 block in
+        // getMoveForRoll (:2434-2447) returns RUSH whenever `!lastTwoMoves(SKULL_BASH)`, so
+        // SKULL_BASH becomes structurally unreachable at asc>=18 and both of the block's
+        // other returns are dead code. That looks like a slip (the real game's A18 Nob uses
+        // Skull Bash *more*), but unlike the ACID_SLIME_L enum fixed in this same batch it is
+        // not a one-word restoration — the correct shape cannot be read off this file. Left
+        // as-is on purpose; the engine repo records it as an open ruling.
+        const std::vector<MonsterEncounter> asc19EliteBossEncounters {
+            MonsterEncounter::GREMLIN_NOB,  MonsterEncounter::LAGAVULIN,
+            MonsterEncounter::THREE_SENTRIES, MonsterEncounter::THE_GUARDIAN,
+            MonsterEncounter::SLIME_BOSS,   MonsterEncounter::HEXAGHOST,
+        };
+        variants.push_back({BATCH_1, 40, false, asc19EliteBossEncounters, 19});
     }
     for (const auto &v : variants) {
         // 10 starter cards are added by the GameContext constructor.
