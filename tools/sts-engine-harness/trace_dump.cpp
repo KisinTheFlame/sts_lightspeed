@@ -1338,10 +1338,102 @@ int main() {
         };
         variants.push_back({BATCH_1, 40, false, asc19EliteBossEncounters, 19});
     }
+
+    // ================================ ACT 2 ==================================
+    //
+    // A SECOND (variants x encounters) product, emitted AFTER the act-1 one above finishes.
+    //
+    // ⚠⚠ WHY IT IS A SEPARATE PRODUCT AND NOT NEW ENTRIES IN `encounters`.
+    // traceIdx is assigned by walking variants x encounters in declaration order and it drives
+    // the relic/potion rotation, so inserting anything into the frozen `encounters` list would
+    // shift every index after it and invalidate all 40 committed files at once. Appending a
+    // whole product only ever adds indices at the END, which leaves the act-1 numbering
+    // untouched. Same rule as variant 21 -> variant 22, one level further out.
+    //
+    // This list holds ALL NINETEEN act-2 encounters (MonsterEncounterPool, MonsterEncounters.h
+    // :153-181 — 5 weak + 8 strong + 3 elite + 3 boss). Listing them all up front is safe
+    // BECAUSE each variant filters: an encounter a variant does not name is `continue`d before
+    // the seed loop, so it consumes no traceIdx. Growing this list later is therefore free,
+    // whereas growing a VARIANT's encounter list is not.
+    //
+    // ⚠ Floors stay {1,3,7} even though act 2 really spans floors ~17-33. floorNum feeds
+    // exactly one thing here: the `Random(seed + floorNum)` that reseeds miscRng / shuffleRng /
+    // cardRandomRng on arrival. Keeping the same three floors keeps act-2 lines comparable to
+    // act-1 ones and costs nothing. `gc.act` likewise stays 1 (GameContext.h:217; only
+    // transitionToAct / a save file ever change it) — the only act-sensitive code in monster
+    // construction is MonsterGroup's `bc.act == 3` Jaw Worm buff, which none of these
+    // encounters reach.
+    const std::vector<std::pair<MonsterEncounter, const char *>> act2Encounters {
+        // weak pool
+        {MonsterEncounter::SPHERIC_GUARDIAN,          "SPHERIC_GUARDIAN"},
+        {MonsterEncounter::CHOSEN,                    "CHOSEN"},
+        {MonsterEncounter::SHELL_PARASITE,            "SHELL_PARASITE"},
+        {MonsterEncounter::THREE_BYRDS,               "THREE_BYRDS"},
+        {MonsterEncounter::TWO_THIEVES,               "TWO_THIEVES"},
+        // strong pool
+        {MonsterEncounter::CHOSEN_AND_BYRDS,          "CHOSEN_AND_BYRDS"},
+        {MonsterEncounter::SENTRY_AND_SPHERE,         "SENTRY_AND_SPHERE"},
+        {MonsterEncounter::CULTIST_AND_CHOSEN,        "CULTIST_AND_CHOSEN"},
+        {MonsterEncounter::THREE_CULTIST,             "THREE_CULTIST"},
+        {MonsterEncounter::SHELLED_PARASITE_AND_FUNGI,"SHELLED_PARASITE_AND_FUNGI"},
+        {MonsterEncounter::SNECKO,                    "SNECKO"},
+        {MonsterEncounter::SNAKE_PLANT,               "SNAKE_PLANT"},
+        {MonsterEncounter::CENTURION_AND_HEALER,      "CENTURION_AND_HEALER"},
+        // elites
+        {MonsterEncounter::GREMLIN_LEADER,            "GREMLIN_LEADER"},
+        {MonsterEncounter::SLAVERS,                   "SLAVERS"},
+        {MonsterEncounter::BOOK_OF_STABBING,          "BOOK_OF_STABBING"},
+        // bosses
+        {MonsterEncounter::CHAMP,                     "CHAMP"},
+        {MonsterEncounter::COLLECTOR,                 "COLLECTOR"},
+        {MonsterEncounter::AUTOMATON,                 "AUTOMATON"},
+    };
+
+    std::vector<DeckVariant> act2Variants;
+    {
+        // Variant 23: the first act-2 variant. Batch 23 of the engine repo.
+        //
+        // Deck / seeds / ascension are variant 0's exactly (BATCH_1, all 125 seeds,
+        // un-upgraded, ascension 0), for variant 0's reasons: monster behaviour barely depends
+        // on the deck, what pulls the branches apart is SEED COUNT, and the 21-card deck makes
+        // the longest fights (= the most monster turns). The engine repo keeps only this one
+        // variant's lines per file (`ENC_V0` policy), so the file is frozen from the moment it
+        // is installed.
+        //
+        // ⚠ ASCENSION 0 ONLY. None of the 40 act-2/3 monsters has had its ascension tiers
+        // calibrated against an oracle, and the engine's `ascCalibrated` gate throws for them,
+        // so an asc-19 act-2 variant would be data with nothing to check it. That is a batch of
+        // its own, and per the rule above it must be ANOTHER APPENDED VARIANT, never a longer
+        // encounter list on this one.
+        //
+        // The three encounters are the act-2 SINGLE-MONSTER ones with no summons and no card
+        // insertion, so this batch exercises the new act-2 plumbing without stacking new
+        // mechanics on top of it:
+        //   SPHERIC_GUARDIAN  Barricade (first monster-side Barricade in the project) +
+        //                     Artifact 3 + a 40-point starting block; all four of its moves
+        //                     end with a SYNCHRONOUS setMove + bc.noOpRollMove().
+        //   CHOSEN            Hex (first PS::HEX producer) + a five-move roll table.
+        //   SNAKE_PLANT       Malleable 3 (only Snake Plant and Writhing Mass have it in the
+        //                     whole project).
+        const std::vector<MonsterEncounter> batch23Encounters {
+            MonsterEncounter::SPHERIC_GUARDIAN,
+            MonsterEncounter::CHOSEN,
+            MonsterEncounter::SNAKE_PLANT,
+        };
+        act2Variants.push_back({BATCH_1, seeds.size(), false, batch23Encounters});
+    }
+
     for (const auto &v : variants) {
         // 10 starter cards are added by the GameContext constructor.
         if (static_cast<int>(v.extra.size()) + 10 > Deck::MAX_SIZE) {
             std::cerr << "deck variant exceeds Deck::MAX_SIZE (" << Deck::MAX_SIZE << "): "
+                      << (v.extra.size() + 10) << " cards" << std::endl;
+            return 1;
+        }
+    }
+    for (const auto &v : act2Variants) {
+        if (static_cast<int>(v.extra.size()) + 10 > Deck::MAX_SIZE) {
+            std::cerr << "act2 deck variant exceeds Deck::MAX_SIZE (" << Deck::MAX_SIZE << "): "
                       << (v.extra.size() + 10) << " cards" << std::endl;
             return 1;
         }
@@ -1351,8 +1443,18 @@ int main() {
     bool firstTrace = true;
     size_t traceIdx = 0;
 
-    for (const auto &variant : variants) {
-    for (const auto &enc : encounters) {
+    // One (variants x encounters) product. This used to sit inline right here; it became a
+    // lambda so that ACT 2 can be appended as a SECOND product without duplicating ~180 lines
+    // of body. `traceIdx` and `firstTrace` are captured BY REFERENCE, so the second call keeps
+    // numbering where the first stopped and the act-1 indices are untouched.
+    //
+    // Extracting it is a pure refactor, and that was proved rather than assumed: with
+    // `act2Variants` still empty, tools/regen-traces.sh --check reproduced all 40 committed
+    // files byte-for-byte. Only after that did variant 23 get filled in.
+    const auto emitProduct = [&](const std::vector<DeckVariant> &variantList,
+                                 const std::vector<std::pair<MonsterEncounter, const char *>> &encounterList) {
+    for (const auto &variant : variantList) {
+    for (const auto &enc : encounterList) {
         if (!variant.encounters.empty() &&
             std::find(variant.encounters.begin(), variant.encounters.end(), enc.first)
                 == variant.encounters.end()) {
@@ -1540,6 +1642,12 @@ int main() {
         }
     }
     }
+    };
+
+    emitProduct(variants, encounters);
+    // ⚠ MUST stay last: appending here only ever hands out traceIdx values past the end of the
+    // act-1 range, which is what keeps every committed act-1 file byte-identical.
+    emitProduct(act2Variants, act2Encounters);
 
     std::cout << "]}" << std::endl;
     return 0;
