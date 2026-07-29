@@ -503,6 +503,23 @@ int main() {
         // (getRandomMonsterIdx, AttackAllEnemy, monsters dying mid-queue) at a fraction of
         // the bytes.
         std::vector<MonsterEncounter> encounters;
+        // Ascension level handed to the GameContext constructor. DEFAULTS TO 0, so every
+        // variant declared before this field existed keeps emitting byte-identical traces.
+        //
+        // Why this axis exists (batch 21): MonsterSpecific.cpp has 185 `ascension >= N`
+        // conditions and every one of them was dead code while this was hardcoded to 0.
+        // The engine repo picks 19 and only 19: all its conditions are of the form
+        // `asc >= N` with N in {2,3,4,7,9,17,18,19}, so one run at 19 lights up every
+        // branch's "high" side while the existing asc-0 corpus already covers the "low"
+        // side. (What that does NOT prove is that the threshold is exactly N rather than
+        // N±1 — that needs a *pair* of levels and is deliberately out of scope.)
+        //
+        // Ascension is not only a monster knob. GameContext::initPlayer gives asc>=10 an
+        // extra ASCENDERS_BANE *before* the class's starting cards (so it sorts first in
+        // the deck array), asc>=14 drops Ironclad maxHp 80 -> 75, and asc>=11 cuts
+        // potionCapacity 3 -> 2 (the potion loop below reads bc.potionCapacity, so that
+        // one follows automatically).
+        int ascension = 0;
     };
 
     // Batch 1 (already registered, verified by the committed variant-0 traces).
@@ -1262,7 +1279,7 @@ int main() {
         for (size_t seedIdx = 0; seedIdx < seeds.size() && seedIdx < variant.seedLimit; ++seedIdx) {
             const auto &sd = seeds[seedIdx];
             for (int floor : floors) {
-                GameContext gc(CharacterClass::IRONCLAD, sd.value, 0);
+                GameContext gc(CharacterClass::IRONCLAD, sd.value, variant.ascension);
                 gc.floorNum = floor;
                 // Arriving at a floor reseeds these three (GameContext::transitionToMapNode:
                 // `const auto r = Random(seed + floorNum); miscRng = shuffleRng = cardRandomRng = r;`).
@@ -1341,8 +1358,15 @@ int main() {
                 std::cout << "{" << q("seed") << ":" << q(sd.name)
                           << "," << q("seedLong") << ":" << q(std::to_string(sd.value))
                           << "," << q("floor") << ":" << floor
-                          << "," << q("encounter") << ":" << q(enc.second)
-                          << "," << q("character") << ":" << q("ironclad")
+                          << "," << q("encounter") << ":" << q(enc.second);
+                // Emitted only when non-zero — same trick as `deckUpgraded` / `goldGained`.
+                // Every asc-0 line therefore stays byte-identical to what is committed,
+                // which is what lets tools/regen-traces.sh --check prove this whole axis is
+                // a no-op for the existing corpus before any new variant is added.
+                if (variant.ascension != 0) {
+                    std::cout << "," << q("ascension") << ":" << variant.ascension;
+                }
+                std::cout << "," << q("character") << ":" << q("ironclad")
                           << "," << q("potionRngSeed") << ":" << q(std::to_string(sd.value))
                           << "," << q("relics") << ":" << strArr(relicNames);
 
