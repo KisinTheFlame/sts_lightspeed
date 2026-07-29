@@ -1421,6 +1421,49 @@ int main() {
             MonsterEncounter::SNAKE_PLANT,
         };
         act2Variants.push_back({BATCH_1, seeds.size(), false, batch23Encounters});
+
+        // Variant 24: batch 24 of the engine repo — FLIGHT (Byrd) and the Mugger.
+        //
+        // Everything is variant 23's (all 125 seeds, un-upgraded, ascension 0, appended rather
+        // than folded into variant 23's encounter list) EXCEPT the deck, which is
+        // BATCH_1 + ONE COPY OF SPOT_WEAKNESS. That one card is deliberate and is the only
+        // reason this variant's deck differs from variant 23's:
+        //
+        //   Monster::isAttacking() -> isMoveAttack(moveHistory[0]) (MonsterMoves.h:414-535) has
+        //   exactly ONE reader in the whole project, SPOT_WEAKNESS. Every act-1 monster batch
+        //   from 13 on kept only the 21-card variant-0 deck (`ENC_V0`), which does not contain
+        //   it, so the attack/not-attack classification of the 21 monsters registered since
+        //   then has NO ORACLE — flipping the predicate to constant-true only reddens the five
+        //   `ENC_ALL` encounters that still carry the 93-card deck (46 cases, measured).
+        //   Adding one Spot Weakness here costs 3 extra deck slots' worth of nothing and gives
+        //   every act-2 monster from this batch on a real oracle for that predicate.
+        //
+        // The three encounters:
+        //   THREE_BYRDS       three Byrds. FLIGHT: halves incoming card damage
+        //                     (BattleContext.cpp:2764), decrements on each unblocked ATTACK
+        //                     (Monster.cpp:362-368, its own slot in the attackedUnblockedHelper
+        //                     else-if chain between CURL_UP and MALLEABLE), sets BYRD_STUNNED
+        //                     when it hits 0, and is restored to 3 at the start of the byrd's
+        //                     own turn (Monster.cpp:28-30).
+        //   TWO_THIEVES       Looter + Mugger. Same family (escape + gold theft) but different
+        //                     numbers AND different dialog-RNG placement: MUGGER_MUG burns an
+        //                     aiRng.random(2) on EVERY mug and its 0.6f dialog roll is on
+        //                     monster turn 2, where the Looter's is on turn 1.
+        //                     It is also the closer for two long-standing blind spots: a
+        //                     thief escaping while a COMPANION IS STILL ALIVE (so the escape
+        //                     does not end the fight and its `none` turn-end is observable),
+        //                     and stealGoldFromPlayer's min(player.gold, amount) clamp (two
+        //                     thieves at 15 each can actually empty the player's purse).
+        //   CHOSEN_AND_BYRDS  Byrd + Chosen. Reuses batch 23's Chosen and puts a Byrd next to a
+        //                     companion, so FLIGHT is exercised outside a mono-species group.
+        std::vector<CardId> batch24 = BATCH_1;
+        batch24.push_back(CardId::SPOT_WEAKNESS);
+        const std::vector<MonsterEncounter> batch24Encounters {
+            MonsterEncounter::THREE_BYRDS,
+            MonsterEncounter::TWO_THIEVES,
+            MonsterEncounter::CHOSEN_AND_BYRDS,
+        };
+        act2Variants.push_back({batch24, seeds.size(), false, batch24Encounters});
     }
 
     for (const auto &v : variants) {
