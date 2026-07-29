@@ -2003,7 +2003,26 @@ MMID Monster::getMoveForRoll(BattleContext &bc, int &monsterData, const int roll
 
             if (asc17) {
                 if (roll < 40) {
-                    if (lastTwoMoves(MMID::ACID_SLIME_M_CORROSIVE_SPIT)) {
+                    // WRONG MONSTER'S ENUM, fixed: this was
+                    //     lastTwoMoves(MMID::ACID_SLIME_M_CORROSIVE_SPIT)
+                    // — the *medium* slime's move id, inside the ACID_SLIME_L case. An L's
+                    // moveHistory can only ever hold ACID_SLIME_L_* ids, so the condition was
+                    // pinned at false: `roll < 40` always returned CORROSIVE_SPIT and the
+                    // randomBoolean(0.6F) plus both of its returns were dead code.
+                    //
+                    // Evidence it is a copy-paste slip rather than intent: the other two
+                    // segments of this same asc17 block (roll < 70 -> lastTwoMoves(L_TACKLE),
+                    // else -> lastMove(L_LICK)) both read the L's OWN enums; only this first
+                    // one names the M. The real game's AcidSlime_L reads its own Corrosive
+                    // Spit here.
+                    //
+                    // ⚠ UNVERIFIED PROBABILITY. Restoring the enum brings this branch's
+                    // `randomBoolean(0.6F)` back to life, and that 0.6 has never been checked
+                    // against the real game — nothing in this repo can decide it (this repo
+                    // IS the oracle). Same standing as the `roll >= 50` threshold revived by
+                    // the Red Slaver usedEntangle fix. Do not delete this note when the value
+                    // is eventually confirmed — update it.
+                    if (lastTwoMoves(MMID::ACID_SLIME_L_CORROSIVE_SPIT)) {
                         if (bc.aiRng.randomBoolean(0.6F)) {
                             return (MMID::ACID_SLIME_L_TACKLE);
                         } else {
