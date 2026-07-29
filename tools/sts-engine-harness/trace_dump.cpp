@@ -1255,6 +1255,51 @@ int main() {
         batch12.push_back(CardId::GHOSTLY_ARMOR);
         variants.push_back({batch12, 40, false, batch12Encounters});
         variants.push_back({batch12, 40, true,  batch12Encounters});
+
+        // Variant 21: ASCENSION 19, batch-1 deck, the 14 "normal" (non-elite, non-boss)
+        // act-1 encounters. Batch 21 of the engine repo.
+        //
+        // WHY 19 AND ONLY 19. Every ascension condition reachable from these encounters is of
+        // the form `ascension >= N` with N in {2,3,4,7,17,19} (MonsterSpecific.cpp,
+        // MonsterGroup.cpp, Monster.cpp). One run at 19 therefore takes the HIGH side of every
+        // one of them, while the existing 125-seed asc-0 corpus already pins the LOW side.
+        // What a single level cannot prove is that the threshold is exactly N rather than
+        // N±1 — that needs a *pair* of levels (16/17, 6/7, …) and is deliberately out of
+        // scope; it is recorded as a blind spot in the engine repo's TODOS.md.
+        //
+        // WHY THE SAME DECK AS VARIANT 0. Holding the deck fixed makes ascension the only
+        // variable between this variant and the frozen variant-0 lines, so any diff in monster
+        // HP, intent, damage or RNG counter is attributable to ascension alone.
+        //
+        // WHY 40 SEEDS AND NOT 125. Volume. Ascension branches are overwhelmingly constant
+        // substitutions (`asc2 ? 12 : 11`) rather than new control flow, so seed diversity
+        // buys much less here than it does for the intent rolls that variant 0 exists to
+        // cover. 40 seeds x 3 floors x 14 encounters is ~30MB.
+        //
+        // NOT JUST A MONSTER KNOB — the player side changes too, and all three fall out of
+        // GameContext for free (they are why this had to be a GameContext-level parameter
+        // rather than a BattleContext one):
+        //   * asc >= 10  an extra ASCENDERS_BANE, obtained BEFORE the class's starting cards
+        //                (GameContext.cpp:479-481), so it sorts FIRST in the deck array;
+        //   * asc >= 14  Ironclad maxHp 80 -> 75 (GameContext.cpp:485);
+        //   * asc >= 11  potionCapacity 3 -> 2 (GameContext.cpp:66) — the potion loop below
+        //                iterates bc.potionCapacity, so it hands out two potions by itself.
+        //
+        // Elites and bosses (GREMLIN_NOB, LAGAVULIN, THREE_SENTRIES, THE_GUARDIAN,
+        // SLIME_BOSS, HEXAGHOST) are NOT here: their HP threshold is asc>=8 / asc>=9 rather
+        // than 7 and they carry their own asc17/18/19 move branches, which is a batch of its
+        // own. ⚠ The next batch must APPEND ANOTHER VARIANT for them rather than extend this
+        // one's encounter list — growing this list shifts every traceIdx after it.
+        const std::vector<MonsterEncounter> asc19Encounters {
+            MonsterEncounter::CULTIST,          MonsterEncounter::JAW_WORM,
+            MonsterEncounter::JAW_WORM_HORDE,   MonsterEncounter::TWO_LOUSE,
+            MonsterEncounter::THREE_LOUSE,      MonsterEncounter::SMALL_SLIMES,
+            MonsterEncounter::LOTS_OF_SLIMES,   MonsterEncounter::LARGE_SLIME,
+            MonsterEncounter::BLUE_SLAVER,      MonsterEncounter::RED_SLAVER,
+            MonsterEncounter::LOOTER,           MonsterEncounter::EXORDIUM_THUGS,
+            MonsterEncounter::EXORDIUM_WILDLIFE, MonsterEncounter::GREMLIN_GANG,
+        };
+        variants.push_back({BATCH_1, 40, false, asc19Encounters, 19});
     }
     for (const auto &v : variants) {
         // 10 starter cards are added by the GameContext constructor.
@@ -1365,6 +1410,24 @@ int main() {
                 // a no-op for the existing corpus before any new variant is added.
                 if (variant.ascension != 0) {
                     std::cout << "," << q("ascension") << ":" << variant.ascension;
+                }
+                // Player HP *entering* the fight, i.e. gc.curHp BEFORE BattleContext::init.
+                //
+                // The `initial` snapshot is taken AFTER init, and init already ran
+                // initRelics (BattleContext.cpp:73) — Blood Vial's `p.heal(2)` among them.
+                // So `initial.player.hp` is a POST-heal value and cannot be fed back in as
+                // the replayer's starting HP without double-healing.
+                //
+                // Nobody noticed until ascension arrived because `GameContext::initPlayer`
+                // ends with `curHp = ascension < 6 ? maxHp : round(maxHp * 0.9f)`
+                // (GameContext.cpp:522): below asc 6 the player enters at FULL health, so the
+                // heal is clamped away and post == pre. At asc 19 it is 68/75, the heal lands,
+                // and every trace whose relic pair contains Blood Vial diverges by exactly 2.
+                //
+                // Emitted only when it differs from maxHp — same trick as `ascension` above,
+                // so every asc-0 line stays byte-identical.
+                if (gc.curHp != gc.maxHp) {
+                    std::cout << "," << q("playerHp") << ":" << gc.curHp;
                 }
                 std::cout << "," << q("character") << ":" << q("ironclad")
                           << "," << q("potionRngSeed") << ":" << q(std::to_string(sd.value))
