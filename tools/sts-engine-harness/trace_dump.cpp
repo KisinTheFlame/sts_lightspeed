@@ -2249,6 +2249,83 @@ int main() {
         std::vector<CardId> batch34Deck = BATCH_1;
         batch34Deck.push_back(CardId::SPOT_WEAKNESS);
         act3Variants.push_back({batch34Deck, 40, false, batch34Encounters});
+
+        // Variant 35: batch 35 of the engine repo — the two act-3 encounters that each finish
+        // an INCOMPLETE PIECE OF SHARED MACHINERY rather than adding a self-contained monster.
+        //
+        //   WRITHING_MASS -> the ONLY monster in the whole reference that carries BOTH
+        //                    MS::MALLEABLE and MS::REACTIVE, and those two share ONE SLOT of
+        //                    attackedUnblockedHelper's else-if chain:
+        //                      `} else if (hasStatus<MALLEABLE>() || hasStatus<REACTIVE>()) {`
+        //                    with two independent `if`s inside (Monster.cpp:369-383). Batch 23
+        //                    installed SNAKE_PLANT and could only transcribe the Malleable
+        //                    half; nothing else can pin the slot's shape, because no other
+        //                    monster has Reactive at all. Splitting the slot into two else-ifs
+        //                    is a silent no-op for every encounter EXCEPT this one.
+        //                    ⚠ Reactive also brings the project's first "getting hit re-rolls
+        //                    the intent" action (`Actions::ReactiveRollMove`, Actions.cpp:
+        //                    133-142), which hard-codes `monsters.arr[0]`, rolls the move
+        //                    getStatus<REACTIVE>() TIMES and only then zeroes the counter —
+        //                    so one multi-hit card queues ONE action that rolls THREE moves.
+        //                    ⚠ And its getMoveForRoll (MonsterSpecific.cpp:3119-3202) is the
+        //                    most involved one in the reference: a `while (true)` around FIVE
+        //                    NON-EXCLUSIVE `if`s, each of which either returns or RE-ROLLS
+        //                    myRoll into the next band and FALLS THROUGH, plus two `continue`s
+        //                    and three distinct randomBoolean probabilities (0.1 / 0.4 / 0.3,
+        //                    with 0.1 appearing twice as two independent literals). A single
+        //                    rollMove can burn anywhere from 1 to seven-odd aiRng draws, so
+        //                    the aiRng counter is an unusually sharp oracle here.
+        //                    ⚠ Its Implant is the only move whose entire combat-side body is
+        //                    `miscInfo = true;` — the reference deliberately does NOT model
+        //                    the Parasite curse (a run-level deck change), keeping only the
+        //                    "already implanted" latch its move rules read.
+        //   GIANT_HEAD    -> MS::SLOW, the first monster power that hangs off the SHARED
+        //                    card-play path: `BattleContext::onAfterUseCard`'s
+        //                    `if (item.triggerOnUse) { ... if (m.hasStatus<SLOW>())
+        //                    m.buff<SLOW>(1); ... }` (BattleContext.cpp:1971-1991). Three
+        //                    cooperating sites, and missing any one drifts silently:
+        //                    +1 per card played, `damage *= 1 + slow * 0.1f` in
+        //                    calculateCardDamage BEFORE Vulnerable (:2748-2750), and
+        //                    `setStatus<SLOW>(0)` — NOT decrement, NOT remove — as the SECOND
+        //                    statement of Monster::applyEndOfRoundPowers (Monster.cpp:79-81).
+        //                    ⚠ Like Reactive it starts at `setHasStatus(true); setStatus(0);`
+        //                    (MonsterSpecific.cpp:163-165), i.e. BIT ON / VALUE ZERO, so it is
+        //                    invisible in the opening snapshot and only shows up once the
+        //                    player starts playing cards. That asymmetry is exactly what a
+        //                    `buff(0)` transcription would get wrong in the other direction.
+        //                    ⚠ IT_IS_TIME is the project's first CAPPED turn ramp:
+        //                    `std::min(getMonsterTurnNumber()-5, 6) * 5` added to
+        //                    `(asc3 ? 40 : 30)` — and the first use is at monster turn 4, where
+        //                    that term is NEGATIVE (-5). Clamping it at zero costs 5 damage on
+        //                    exactly the first Time.
+        //                    ⚠ Its damage tier is asc3 (the ELITE band getTriIdx(asc, 3, 18)),
+        //                    not the hallway band asc2 — copying the neighbouring monster's
+        //                    tiers would be wrong.
+        //
+        // ⚠ WHY THESE TWO TOGETHER: Reactive lives in attackedUnblockedHelper, Slow in
+        // onAfterUseCard / calculateCardDamage / applyEndOfRoundPowers. They share no
+        // statement and no monster, so a red diff still points at exactly one of them.
+        // Both are single-monster encounters, which also keeps this batch cheap right after
+        // the 5.2MB THREE_DARKLINGS file.
+        //
+        // ⚠⚠ FINGERPRINT COLLISION RULE (same as variants 32/33/34): deck + ascension +
+        // targetPolicy here are byte-identical to variants 24..29 and 32..34, so this
+        // encounter list must stay disjoint from all of theirs. WRITHING_MASS and GIANT_HEAD
+        // are named by no other variant, and JAW_WORM_HORDE is deliberately not here.
+        //
+        // Deck / seeds / ascension / target policy are variant 32's exactly, for variant 32's
+        // reasons — and the SPOT_WEAKNESS matters more than usual this time: of the eight new
+        // moves, WRITHING_MASS_WITHER goes through attackPlayerHelper yet is NOT in the
+        // isMoveAttack whitelist (MonsterMoves.h:527-529 lists only FLAIL / MULTI_STRIKE /
+        // STRONG_STRIKE). That is the mirror image of batch 32's EXPLODER_EXPLODE case and is
+        // pinned by data rather than argued about — see the engine repo's TODOS "待裁定".
+        const std::vector<MonsterEncounter> batch35Encounters {
+            MonsterEncounter::WRITHING_MASS,  // MALLEABLE + REACTIVE share one chain slot
+            MonsterEncounter::GIANT_HEAD,     // SLOW: +1 per card, x(1+0.1N), zeroed each round
+        };
+        std::vector<CardId> batch35Deck = BATCH_1;
+        batch35Deck.push_back(CardId::SPOT_WEAKNESS);
+        act3Variants.push_back({batch35Deck, 40, false, batch35Encounters});
     }
 
     for (const auto &v : variants) {
