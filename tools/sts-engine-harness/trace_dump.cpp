@@ -1895,6 +1895,110 @@ int main() {
         act2Variants.push_back({batch24, 40, false, asc19Act2Encounters, 19});
     }
 
+    // ========================= TARGET POLICY (batch 31) =======================
+    //
+    // A THIRD (variants x encounters) product, emitted AFTER both of the above.
+    //
+    // ⚠⚠ WHY A THIRD PRODUCT RATHER THAN A VARIANT APPENDED TO `variants`.
+    // The act-1 encounters belong to the FIRST product, so the obvious move — push a
+    // variant onto `variants` — is exactly the wrong one: traceIdx is captured by
+    // reference and the act-1 product runs FIRST, so growing it shifts every traceIdx
+    // the act-2 product hands out and invalidates all 38 committed act-2 files.
+    // (Variant 22 could be appended to `variants` in its day only because act 1 was still
+    // the LAST product; that stopped being true in batch 23.)
+    //
+    // A third product sidesteps that: appending here only ever hands out indices past the
+    // end of everything already committed. It also lets ONE variant span both acts, which
+    // is what this axis wants — "multi-monster" is a property of the encounter, not of the
+    // act.
+    //
+    // The encounter list is act 1's ++ act 2's, i.e. ALL THIRTY-NINE installed encounters.
+    // Listing them all up front is safe for the same reason act2Encounters lists all 19:
+    // an encounter a variant does not name is `continue`d BEFORE the seed loop and
+    // therefore consumes no traceIdx. So growing THIS list later is free, whereas growing
+    // a VARIANT's encounter list is not.
+    std::vector<std::pair<MonsterEncounter, const char *>> tgtEncounters = encounters;
+    tgtEncounters.insert(tgtEncounters.end(), act2Encounters.begin(), act2Encounters.end());
+
+    std::vector<DeckVariant> tgtVariants;
+    {
+        // Variant 31: TARGET POLICY 1 (lastAliveMonster) over every MULTI-MONSTER
+        // encounter installed so far, 11 from act 1 and 12 from act 2.
+        //
+        // WHY ONLY MULTI-MONSTER ONES. lastAliveMonster and firstAliveMonster use the same
+        // predicate and the same fallback, so with exactly one monster on the field they
+        // return the same index and the whole trace would be byte-identical to the asc-0
+        // one already committed — pure volume for zero information. The 16 encounters left
+        // out are listed in the engine repo's TODOS with the reason.
+        //
+        // ⚠ "MULTI-MONSTER" MEANS "CAN EVER HAVE TWO TARGETABLE MONSTERS AT ONCE", not
+        // "starts with two". Four of the 23 start as a single monster and become a group:
+        //   LARGE_SLIME / SLIME_BOSS  split (Monster::largeSlimeSplit :3392 writes the
+        //                             mother's slot AND the one to its right;
+        //                             Monster::slimeBossSplit :3419 writes slots 0 and 2);
+        //   AUTOMATON                 spawns two Bronze Orbs into the reserved slots 0/2;
+        //   COLLECTOR                 spawns Torch Heads into the reserved slots 1/0.
+        // Leaving those out would have missed exactly the situations this axis exists for.
+        //
+        // ⚠ THE ACCEPTANCE TARGET IS CENTURION_AND_HEALER. The Centurion sits at slot 0 and
+        // the Mystic at slot 1, and CENTURION_FURY is only ever rolled when
+        // `getAliveCount() > 1` is FALSE (MonsterSpecific.cpp:2192-2216). Under the old
+        // policy the Centurion always died first, so the Mystic could never predecease it
+        // and CENTURION_FURY's takeTurn case (:571-574) had zero examples across the whole
+        // corpus — it is the reason this axis was scheduled at all. Under policy 1 the
+        // player kills the Mystic first, which is also the standard human line ("kill the
+        // healer"), so this is not a contrived state.
+        //
+        // WHY THE SAME DECK / SEEDS / ASCENSION AS THE ACT-2 ASC-0 VARIANTS.
+        //   * deck = BATCH_1 + one SPOT_WEAKNESS, byte-identical to variants 24..30, so the
+        //     TARGET POLICY is the only variable between an `<enc>.jsonl` line and an
+        //     `<enc>@tgt1.jsonl` line. The Spot Weakness copy also keeps
+        //     Monster::isAttacking() -> isMoveAttack under an oracle here.
+        //   * 40 seeds, matching the ascension variants: what this axis buys is a different
+        //     DEATH ORDER, which shows up in the first handful of seeds, not seed diversity.
+        //   * ASCENSION 0 deliberately. Stacking the two axes in one batch would make "which
+        //     axis broke the data" undiagnosable, and `<enc>@asc19@tgt1` is a shape nothing
+        //     needs yet. The group-key suffix order (asc first, tgt second) is fixed so the
+        //     combination can be added later without renaming anything.
+        //
+        // ⚠ Deck AND ascension both match variants 24..29, so the fingerprint
+        // (split-traces.mjs / variant0-rows.mjs use deck contents + ascension + TARGET
+        // POLICY) is distinguished ONLY by targetPolicy — and the group key carries a
+        // `@tgt1` suffix, so these rows land in 23 NEW files. That is the same escape the
+        // asc-19 variants use, and it is why this variant's encounter list MAY overlap
+        // variants 21..30's. It would NOT be safe to reuse this deck at asc 0 AND policy 0.
+        const std::vector<MonsterEncounter> batch31Encounters {
+            // ---- act 1: 11 of 20 ----
+            MonsterEncounter::JAW_WORM_HORDE,   // 3 Jaw Worms
+            MonsterEncounter::TWO_LOUSE,        // 2 Louses
+            MonsterEncounter::THREE_LOUSE,      // 3 Louses
+            MonsterEncounter::SMALL_SLIMES,     // 2 slimes
+            MonsterEncounter::LOTS_OF_SLIMES,   // 5 small slimes
+            MonsterEncounter::LARGE_SLIME,      // 1, then 2 after largeSlimeSplit
+            MonsterEncounter::GREMLIN_GANG,     // 4 gremlins
+            MonsterEncounter::EXORDIUM_THUGS,   // weak wildlife + strong humanoid
+            MonsterEncounter::EXORDIUM_WILDLIFE,// strong wildlife + weak wildlife
+            MonsterEncounter::THREE_SENTRIES,   // 3 Sentries
+            MonsterEncounter::SLIME_BOSS,       // 1, then 2 after slimeBossSplit
+            // ---- act 2: 12 of 19 ----
+            MonsterEncounter::THREE_BYRDS,
+            MonsterEncounter::TWO_THIEVES,
+            MonsterEncounter::CHOSEN_AND_BYRDS,
+            MonsterEncounter::SENTRY_AND_SPHERE,
+            MonsterEncounter::CULTIST_AND_CHOSEN,
+            MonsterEncounter::THREE_CULTIST,
+            MonsterEncounter::SHELLED_PARASITE_AND_FUNGI,
+            MonsterEncounter::CENTURION_AND_HEALER,  // ★ the acceptance target
+            MonsterEncounter::GREMLIN_LEADER,   // 3 alive of 4 slots, + SummonGremlins
+            MonsterEncounter::SLAVERS,          // 3 slavers
+            MonsterEncounter::AUTOMATON,        // 1, then +2 Bronze Orbs
+            MonsterEncounter::COLLECTOR,        // 1, then +2 Torch Heads
+        };
+        std::vector<CardId> batch31Deck = BATCH_1;
+        batch31Deck.push_back(CardId::SPOT_WEAKNESS);
+        tgtVariants.push_back({batch31Deck, 40, false, batch31Encounters, 0, 1});
+    }
+
     for (const auto &v : variants) {
         // 10 starter cards are added by the GameContext constructor.
         if (static_cast<int>(v.extra.size()) + 10 > Deck::MAX_SIZE) {
@@ -1907,6 +2011,13 @@ int main() {
         if (static_cast<int>(v.extra.size()) + 10 > Deck::MAX_SIZE) {
             std::cerr << "act2 deck variant exceeds Deck::MAX_SIZE (" << Deck::MAX_SIZE << "): "
                       << (v.extra.size() + 10) << " cards" << std::endl;
+            return 1;
+        }
+    }
+    for (const auto &v : tgtVariants) {
+        if (static_cast<int>(v.extra.size()) + 10 > Deck::MAX_SIZE) {
+            std::cerr << "target-policy deck variant exceeds Deck::MAX_SIZE (" << Deck::MAX_SIZE
+                      << "): " << (v.extra.size() + 10) << " cards" << std::endl;
             return 1;
         }
     }
@@ -2130,9 +2241,15 @@ int main() {
     };
 
     emitProduct(variants, encounters);
-    // ⚠ MUST stay last: appending here only ever hands out traceIdx values past the end of the
-    // act-1 range, which is what keeps every committed act-1 file byte-identical.
+    // ⚠ MUST stay after the act-1 product: appending here only ever hands out traceIdx values
+    // past the end of the act-1 range, which is what keeps every committed act-1 file
+    // byte-identical.
     emitProduct(act2Variants, act2Encounters);
+    // ⚠ MUST stay last, for the same reason one level further out. Note the corollary: from
+    // now on NOTHING may be appended to `variants` or `act2Variants` either — either would
+    // shift the traceIdx values this product hands out. New axes get their own product at the
+    // end; new act-1/act-2 variants are no longer free.
+    emitProduct(tgtVariants, tgtEncounters);
 
     std::cout << "]}" << std::endl;
     return 0;
