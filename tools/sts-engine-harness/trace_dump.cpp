@@ -2403,6 +2403,117 @@ int main() {
         std::vector<CardId> batch36Deck = BATCH_1;
         batch36Deck.push_back(CardId::SPOT_WEAKNESS);
         act3Variants.push_back({batch36Deck, 40, false, batch36Encounters});
+
+        // Variant 37: batch 37 of the engine repo — THE AWAKENED ONE, alone, because it is the
+        // last unregistered writer of `Monster::halfDead` and it writes it from the ONE branch
+        // of Monster::die that no other monster can reach.
+        //
+        //   AWAKENED_ONE -> `Monster::die`'s FIRST branch (Monster.cpp:285-292):
+        //                     if (id == AWAKENED_ONE && !miscInfo) {   // stage 1
+        //                         halfDead = true; removeDebuffs();
+        //                         removeStatus<MS::CURIOSITY>();
+        //                         setMove(AWAKENED_ONE_REBIRTH);
+        //                         bc.cardQueue.clear();
+        //                     } else if (monstersAlive == 0 || hasStatus<MINION_LEADER>()) {
+        //                         bc.outcome = PLAYER_VICTORY; return;
+        //                     }
+        //                   ⚠ It sits BEFORE the victory `return`, so it is the only path in
+        //                   the whole reference that can take a monster off the field without
+        //                   ever consulting monstersAlive — killing the last monster on the
+        //                   board does NOT end the fight if that monster is a stage-1 Awakened
+        //                   One. Darkling's REGROW (batch 34) lives in the else-if chain AFTER
+        //                   that return and therefore can only fire while a friend is alive;
+        //                   this one is the exact opposite shape. Same field, opposite gate.
+        //                   ⚠ It is keyed on `id == AWAKENED_ONE && !miscInfo`, not on a
+        //                   status bit — the reference's own `// todo change to status` says
+        //                   so. Transcribe the id test, not a REGROW-style power.
+        //                   ⚠ `bc.cardQueue.clear()` is the reference's only monster-side
+        //                   card-queue wipe (the other caller is Actions::ClearCardQueue).
+        //                   ⚠ AWAKENED_ONE_REBIRTH then rewrites maxHp/curHp, flips halfDead
+        //                   back, latches `miscInfo = true`, `strength = std::max(0,strength)`,
+        //                   `++monstersAlive`, `buff<MINION_LEADER>()` — so stage 2 leaves the
+        //                   fight through the OTHER branch (MINION_LEADER wins on the spot even
+        //                   with both Cultists still standing).
+        //                   ⚠ MS::CURIOSITY is new, and it is a PURE MARKER in the reference:
+        //                   its only reader (BattleContext.cpp:1909-1912, "+strength when the
+        //                   player plays a Power card") is COMMENTED OUT. It still shows up in
+        //                   the monster snapshot and is still removed by die, so it has to be
+        //                   modelled — but its effect must NOT be, there is no oracle for it.
+        //                   ⚠ MS::REGEN is new too and is NOT a marker: Monster::
+        //                   applyEndOfTurnTriggers heals `getStatus<REGEN>()` as its FIFTH
+        //                   statement (Metallicize / Malleable / Plated Armor / Intangible /
+        //                   REGEN / Shackled). 10 HP per round at ascension 0.
+        //                   ⚠ AWAKENED_ONE_SLUDGE shuffles a VOID into the draw pile — the
+        //                   first status card in the corpus whose ON-DRAW effect matters
+        //                   (`bc.player.energy = std::max(0, energy-1)`, CardManager.cpp:426).
+        //
+        // ⚠ WHY THIS ENCOUNTER RATHER THAN THE MONSTER ALONE: MonsterGroup.cpp:179-184 builds
+        // CULTIST, CULTIST, AWAKENED_ONE — the boss is at index 2, so the default policy
+        // (firstAliveMonster) chews through both Cultists first. That is what makes the fight
+        // long enough for REGEN and for the stage-1 death to be reached at all.
+        //
+        // ⚠⚠ FINGERPRINT COLLISION RULE (same as variants 32..36): deck + ascension +
+        // targetPolicy here are byte-identical to variants 24..29 and 32..36, so this
+        // encounter list must stay disjoint from all of theirs. AWAKENED_ONE is named by no
+        // other variant, and JAW_WORM_HORDE is deliberately not here.
+        //
+        // ⚠⚠ THIS IS THE FIRST ACT-3 VARIANT THAT DOES **NOT** REUSE `BATCH_1 + SPOT_WEAKNESS`,
+        // and the reason is measured, not stylistic: with that 22-card deck the Awakened One's
+        // ENTIRE SECOND PHASE IS STRUCTURALLY UNREACHABLE. Measured over the same 120 traces
+        // (40 seeds x 3 floors):
+        //
+        //   deck                                    avg turns   stage-1 deaths   REBIRTH exec
+        //   BATCH_1 + SPOT_WEAKNESS (22 cards)          3.6           0 / 120            0
+        //   + 6 strong cards, un-upgraded (28)          3.6           0 / 120            0
+        //   this deck (45 cards, upgradeAll)            8.7          45 / 120           44
+        //
+        // The player is dead on turn 3-4 with the standard deck: two Cultists ramp +3 Strength
+        // a round while the boss hits for 20-24, and 300 HP of stage-1 boss is simply not
+        // reachable in four turns. REBIRTH / DARK_ECHO / SLUDGE / TACKLE all came back
+        // "appeared 0 / executed 0" from check-coverage.mjs, i.e. no oracle at all for the
+        // half-death branch this batch exists to install. This is the "focused deck" escape
+        // hatch the engine repo's WORKFLOW.md describes (batch 5 / batch 7 used it for card
+        // coverage); here it is used for MONSTER coverage, which is new.
+        //
+        // ⚠ TWO THINGS DRIVE THE DECK'S SHAPE, and both come from the policy, not from taste:
+        //  ① `pickAction` plays the LEFTMOST playable card and then rescans from 0, i.e. it
+        //     spends energy strictly left to right. A 3-cost card is therefore played only if
+        //     it happens to be at hand index 0 at the start of a turn — DEMON_FORM and
+        //     BARRICADE measured as near-dead cards (attempt 2 above changed nothing at all).
+        //     So everything added here costs 0 or 1, except IMPERVIOUS/REAPER at 2.
+        //  ② `upgradeAll = true`. Upgrades are the cheapest available power boost and they
+        //     change one card qualitatively: LIMIT_BREAK+ does NOT exhaust, so doubling
+        //     Strength recurs every deck cycle. Combined with four SPOT_WEAKNESS (+4 each,
+        //     also non-exhausting) that is the whole damage engine.
+        // ⚠ SPOT_WEAKNESS is in here four times rather than once. It is still the
+        //   `Monster::isAttacking()` oracle every act-2/3 variant carries, but here it doubles
+        //   as the Strength engine, so its coverage goes UP rather than down.
+        // ⚠ IMPERVIOUS+ is exactly 40 Block and AWAKENED_ONE_DARK_ECHO is exactly 40 damage.
+        //   That is what turns "the boss reborn, then the player died" into two or three more
+        //   stage-2 turns — SLUDGE/TACKLE executions went 4/4 -> 18/17 when the third and
+        //   fourth copies went in.
+        //
+        // ⚠ The deck's fingerprint (contents + upgraded flag) therefore differs from every
+        // other variant, so the disjointness rule above is satisfied twice over.
+        const std::vector<MonsterEncounter> batch37Encounters {
+            MonsterEncounter::AWAKENED_ONE,  // half-death via Monster::die's FIRST branch
+        };
+        std::vector<CardId> batch37Deck = BATCH_1;
+        batch37Deck.push_back(CardId::SPOT_WEAKNESS);
+        for (CardId c : {CardId::SPOT_WEAKNESS, CardId::SPOT_WEAKNESS, CardId::SPOT_WEAKNESS,
+                         CardId::LIMIT_BREAK, CardId::LIMIT_BREAK,
+                         CardId::SWORD_BOOMERANG, CardId::SWORD_BOOMERANG,
+                         CardId::GHOSTLY_ARMOR, CardId::GHOSTLY_ARMOR,
+                         CardId::GHOSTLY_ARMOR, CardId::GHOSTLY_ARMOR,
+                         CardId::GOOD_INSTINCTS, CardId::GOOD_INSTINCTS,
+                         CardId::IMPERVIOUS, CardId::IMPERVIOUS,
+                         CardId::IMPERVIOUS, CardId::IMPERVIOUS,
+                         CardId::REAPER, CardId::REAPER,
+                         CardId::FINESSE, CardId::FINESSE,
+                         CardId::FLASH_OF_STEEL, CardId::FLASH_OF_STEEL}) {
+            batch37Deck.push_back(c);
+        }
+        act3Variants.push_back({batch37Deck, 40, true, batch37Encounters});
     }
 
     for (const auto &v : variants) {
