@@ -1520,6 +1520,65 @@ int main() {
             MonsterEncounter::SNECKO,
         };
         act2Variants.push_back({batch24, seeds.size(), false, batch25Encounters});
+
+        // Variant 26: batch 26 of the engine repo — MONSTERS BUFFING/HEALING THEIR ALLIES
+        // (Centurion + Mystic), plus three encounters that are new COMBINATIONS of monsters
+        // that are already registered.
+        //
+        // Deck / seeds / ascension are variant 24/25's exactly (BATCH_1 + one SPOT_WEAKNESS,
+        // all 125 seeds, un-upgraded, ascension 0), appended rather than folded into an
+        // existing variant's encounter list (traceIdx drives the relic/potion rotation).
+        // The Spot Weakness copy carries forward for the usual reason: it is the only reader of
+        // Monster::isAttacking() -> isMoveAttack (MonsterMoves.h:414-535), so every new
+        // monster move gets its attack/not-attack classification pinned. New moves this batch:
+        // CENTURION_SLASH / CENTURION_FURY / MYSTIC_ATTACK_DEBUFF are in the whitelist,
+        // CENTURION_DEFEND / MYSTIC_BUFF / MYSTIC_HEAL are not.
+        //
+        // ⚠ Decks 24/25/26 are byte-identical, and split-traces.mjs / variant0-rows.mjs
+        //   fingerprint a variant by its DECK CONTENTS — safe only because the three encounter
+        //   lists are pairwise DISJOINT (see the note on variant 25). All four encounters here
+        //   are ones no earlier variant covers.
+        //
+        // The four encounters:
+        //   CENTURION_AND_HEALER  Centurion (slot 0) + Mystic (slot 1). The two new monsters,
+        //                         and the first monster-to-ally HEAL and monster-to-ally BUFF
+        //                         in the project. All three of the "help my friend" moves
+        //                         target a HARDCODED slot, not a random ally like the Shield
+        //                         Gremlin's GainBlockRandomEnemy: CENTURION_DEFEND blocks
+        //                         arr[1] and nothing for itself (MonsterSpecific.cpp:562-569),
+        //                         MYSTIC_HEAL / MYSTIC_BUFF hit arr[0] AND then itself
+        //                         (:600-608 / :588-598). Their guards differ too —
+        //                         getAliveCount() > 1 vs monstersAlive > 1 (same value, two
+        //                         accessors). Centurion's roll table branches on whether the
+        //                         Mystic is alive (defend when it is, fury when it is not,
+        //                         :2192-2216) and the Mystic's is the only one in the project
+        //                         that reads HP: it force-heals when itself or arr[0] is
+        //                         >= healNeedAmt below max (:2223-2229). All three of those
+        //                         "help" cases end with a SYNCHRONOUS real rollMove(bc), so the
+        //                         heal is already applied when the next intent is chosen.
+        //   THREE_CULTIST         three Cultists. Same species x3: three interleaved rollMoves
+        //                         on one aiRng stream, and Ritual stacking on three monsters at
+        //                         once. The Cultist has been registered since batch 1 but only
+        //                         ever as a lone monster (or one of six candidates in
+        //                         EXORDIUM_THUGS).
+        //   CULTIST_AND_CHOSEN    Cultist (slot 0) + Chosen (slot 1). Puts batch 23's Chosen
+        //                         next to a companion, so its HEX + drain are exercised while
+        //                         another monster is taking turns.
+        //   SENTRY_AND_SPHERE     Sentry (slot 0) + Spheric Guardian (slot 1). Two payoffs:
+        //                         the Sentry's first move is `idx % 2 == 0 ? BOLT : BEAM`
+        //                         (:2683-2691) and this is the first encounter where a Sentry
+        //                         sits at slot 0 in a group whose OTHER member is not a Sentry;
+        //                         and the Spheric Guardian (Barricade + Artifact 3 + 40 block,
+        //                         batch 23) finally has a companion, so the "clear block unless
+        //                         Barricade" loop in applyStartOfTurnPowers runs over a group
+        //                         where one member keeps its block and the other does not.
+        const std::vector<MonsterEncounter> batch26Encounters {
+            MonsterEncounter::CENTURION_AND_HEALER,
+            MonsterEncounter::THREE_CULTIST,
+            MonsterEncounter::CULTIST_AND_CHOSEN,
+            MonsterEncounter::SENTRY_AND_SPHERE,
+        };
+        act2Variants.push_back({batch24, seeds.size(), false, batch26Encounters});
     }
 
     for (const auto &v : variants) {

@@ -2709,7 +2709,16 @@ MMID Monster::getMoveForRoll(BattleContext &bc, int &monsterData, const int roll
                 break;
             }
 
-            int roll2 = 100;
+            // sts-engine patch (batch 26): the game does `num = AbstractDungeon.aiRng.random(20, 99);`
+            // — it OVERWRITES the same number and then tests it. `roll` is a `const int`
+            // parameter here so it cannot be overwritten, hence `roll2`; but it used to be
+            // initialised to the sentinel 100 and tested as `roll < 60 || roll2 < 60`, and
+            // `roll < 20` implies `roll < 60`, so the right-hand side was never evaluated and
+            // the re-roll's VALUE was dead. Initialising roll2 to `roll` and testing only
+            // `roll2` is the overwrite semantics, exactly.
+            // ⚠ The `bc.aiRng.random(20,99)` call itself is untouched: same place, same count.
+            //    Only how the value is USED changes.
+            int roll2 = roll;
 
             if (roll < 20) {
                 if (!lastMove(MMID::SHELLED_PARASITE_FELL)) {
@@ -2719,7 +2728,7 @@ MMID Monster::getMoveForRoll(BattleContext &bc, int &monsterData, const int roll
                 roll2 = bc.aiRng.random(20,99);
             }
 
-            if (roll < 60 || roll2 < 60) {
+            if (roll2 < 60) {
                 if (!lastTwoMoves(MMID::SHELLED_PARASITE_DOUBLE_STRIKE)) {
                     return (MMID::SHELLED_PARASITE_DOUBLE_STRIKE);
                 } else {
