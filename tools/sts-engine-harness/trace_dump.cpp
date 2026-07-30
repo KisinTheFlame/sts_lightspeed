@@ -1464,6 +1464,62 @@ int main() {
             MonsterEncounter::CHOSEN_AND_BYRDS,
         };
         act2Variants.push_back({batch24, seeds.size(), false, batch24Encounters});
+
+        // Variant 25: batch 25 of the engine repo — PLATED_ARMOR (Shelled Parasite) and
+        // CONFUSED (Snecko).
+        //
+        // Deck / seeds / ascension are variant 24's exactly (BATCH_1 + one SPOT_WEAKNESS, all
+        // 125 seeds, un-upgraded, ascension 0), and it is APPENDED rather than folded into
+        // variant 24's encounter list for the usual reason (traceIdx drives the relic/potion
+        // rotation; growing an existing variant's list shifts every index after it).
+        //
+        // The Spot Weakness copy carries forward from batch 24 deliberately: it is the only
+        // reader of Monster::isAttacking() -> isMoveAttack (MonsterMoves.h:414-535), so keeping
+        // it in every new act-2 variant is what gives each batch's new monsters an oracle for
+        // their attack/not-attack classification.
+        //
+        // ⚠ NOTE FOR THE NEXT BATCH: variants 24 and 25 have the BYTE-IDENTICAL deck, and the
+        // engine repo's tools/{split-traces,variant0-rows}.mjs fingerprint a variant by its
+        // DECK CONTENTS. That is safe here only because the two encounter lists are DISJOINT,
+        // so no output file ever contains rows from both. If a future variant reuses this deck
+        // AND names an encounter an earlier variant already covers, both variants' rows would
+        // land in one file and be treated as a single block — the "frozen prefix" would grow
+        // silently. Either keep the encounter lists disjoint (the norm: each batch installs
+        // encounters no earlier batch had) or give the new variant a distinguishable deck.
+        //
+        // The three encounters:
+        //   SHELL_PARASITE   one Shelled Parasite (note the enum has no "ED" while the monster
+        //                    id does). PLATED_ARMOR 14 + 14 block: adds block equal to its
+        //                    stacks at end of turn (Monster.cpp:51-52) and loses one stack per
+        //                    unblocked ATTACK, in its OWN slot of the attackedUnblockedHelper
+        //                    else-if chain — the SECOND one, between INVINCIBLE and CURL_UP
+        //                    (Monster.cpp:352-355). Hitting 0 clears the statusBit (unlike
+        //                    FLIGHT) and, gated on `id == SHELLED_PARASITE`, rewrites the intent
+        //                    to SHELLED_PARASITE_STUNNED. That stunned turn does nothing and
+        //                    ends with a SYNCHRONOUS `setMove(FELL); rollMove(bc);` — the first
+        //                    real (non-no-op) synchronous rollMove in the project.
+        //                    Its SUCK move is the whole project's only Actions::VampireAttack
+        //                    user: it heals min(damage, player.lastAttackUnblockedDamage).
+        //   SHELLED_PARASITE_AND_FUNGI
+        //                    Shelled Parasite (slot 0) + Fungi Beast (slot 1). Two jobs at
+        //                    once: it puts the parasite next to a companion (VampireAttack
+        //                    hardcodes arr[0], so the slot ordering matters), and it is the
+        //                    closer for batch 16's Spore Cloud blind spot — Monster::die
+        //                    returns early when the dying monster was the LAST one, so the
+        //                    death trigger only ever runs with a companion alive.
+        //   SNECKO           one Snecko. CONFUSED is the batch's other new mechanic and lives
+        //                    entirely in CardManager::draw (CardManager.cpp:403-412): for EVERY
+        //                    card drawn while confused it burns one cardRandomRng.random(3) —
+        //                    OUTSIDE the `if (cost != newCost)` guard — and writes BOTH `cost`
+        //                    and `costForTurn`, i.e. PERMANENTLY, not just for the turn. Since
+        //                    cardRandomRng is a shared stream, this shifts every later consumer;
+        //                    the rng.cardRandom counter in each frame is the oracle.
+        const std::vector<MonsterEncounter> batch25Encounters {
+            MonsterEncounter::SHELL_PARASITE,
+            MonsterEncounter::SHELLED_PARASITE_AND_FUNGI,
+            MonsterEncounter::SNECKO,
+        };
+        act2Variants.push_back({batch24, seeds.size(), false, batch25Encounters});
     }
 
     for (const auto &v : variants) {
