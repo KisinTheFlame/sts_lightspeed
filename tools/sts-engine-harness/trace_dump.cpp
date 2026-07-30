@@ -1629,6 +1629,70 @@ int main() {
             MonsterEncounter::SLAVERS,
         };
         act2Variants.push_back({batch24, seeds.size(), false, batch27Encounters});
+
+        // Variant 28: batch 28 of the engine repo — the Book of Stabbing (act 2's last elite)
+        // and the Bronze Automaton (the SECOND summon host, with its own dedicated code path).
+        //
+        // Deck / seeds / ascension are variant 24/25/26/27's exactly (BATCH_1 + one
+        // SPOT_WEAKNESS, all 125 seeds, un-upgraded, ascension 0), appended rather than folded
+        // into an existing variant's encounter list (traceIdx drives the relic/potion rotation).
+        // The Spot Weakness copy carries forward for the usual reason: it is the only reader of
+        // Monster::isAttacking() -> isMoveAttack (MonsterMoves.h:414-535). New moves this batch:
+        // BOOK_OF_STABBING_MULTI_STAB / _SINGLE_STAB, BRONZE_AUTOMATON_FLAIL / _HYPER_BEAM and
+        // BRONZE_ORB_BEAM are in the whitelist; BRONZE_AUTOMATON_BOOST / _SPAWN_ORBS / _STUNNED
+        // and BRONZE_ORB_STASIS / _SUPPORT_BEAM are not.
+        //
+        // ⚠ Decks 24..28 are byte-identical and split-traces.mjs / variant0-rows.mjs
+        //   fingerprint a variant by its DECK CONTENTS — safe only because the five encounter
+        //   lists are pairwise DISJOINT (see the note on variant 25). Neither encounter here is
+        //   covered by an earlier variant.
+        //
+        // The two encounters:
+        //   BOOK_OF_STABBING  one Book of Stabbing (160-164 HP, elite tier asc>=8). Two things:
+        //                     PAINFUL_STABS (preBattleAction, MonsterSpecific.cpp:177-180) puts
+        //                     a WOUND in the discard pile for every instance of UNBLOCKED
+        //                     attack damage (Player::attacked, Player.cpp:250-252 — inside the
+        //                     `damage > 0` branch, so a fully blocked hit inserts nothing), and
+        //                     MULTI_STAB's hit count is `miscInfo` — the same one field the
+        //                     Louse's bite damage, the Red Slaver's usedEntangle and the Gremlin
+        //                     Wizard's charge counter live in. It starts at 1 (`++miscInfo` in
+        //                     preBattleAction, which runs AFTER the opening rollMove) and the
+        //                     roll table increments it on every MULTI_STAB it hands out, so the
+        //                     stab count grows monotonically across the fight — a multi-hit
+        //                     attack whose LENGTH is state, which nothing registered so far has.
+        //   AUTOMATON         Bronze Automaton in slot 1, with slots 0 AND 2 RESERVED EMPTY.
+        //                     MonsterGroup.cpp:173-177 writes `monsterCount = 1;
+        //                     createMonster(BRONZE_AUTOMATON); ++monsterCount;` — the assignment
+        //                     BEFORE createMonster is what pushes the automaton off slot 0, and
+        //                     the bare `++` afterwards is what makes the group three slots long
+        //                     with only one monster in it. A different shape from the Gremlin
+        //                     Leader's (which reserves slot 0 only and writes monstersAlive /
+        //                     monsterCount by hand): copy it, do not tidy it.
+        //                     Monster::spawnBronzeOrbs (MonsterSpecific.cpp:3443-3464) is NOT
+        //                     Actions::SummonGremlins: it is called SYNCHRONOUSLY from takeTurn
+        //                     (:503, no addToBot), the two slots are HARDCODED 0 and 2 (no
+        //                     search, no isDying test), there is no `= Monster()` reset, the
+        //                     species is fixed so nothing is rolled off aiRng for it, and it
+        //                     ends with `++bc.monsterTurnIdx` so the orb in slot 2 does not act
+        //                     on the turn it appears. Species aside, each orb still burns TWO
+        //                     monsterHpRng calls (BRONZE_ORB is in initHp's "discard the first
+        //                     roll" family, :109-112).
+        //                     The automaton also carries MINION_LEADER + ARTIFACT 3
+        //                     (:217-221) and its whole intent chain is synchronous setMove +
+        //                     synchronous noOpRollMove, keyed off `miscInfo` used as
+        //                     `lastBoostWasFlail` (:471-511) — so HYPER_BEAM every other BOOST,
+        //                     and (below asc19) a STUNNED turn after it that does nothing at all.
+        //                     The orbs bring STASIS: BRONZE_ORB_STASIS pulls one card out of the
+        //                     draw pile (or the discard pile when the draw pile is empty) via
+        //                     cardRandomRng, biased to the highest rarity present
+        //                     (RARE > UNCOMMON > COMMON, else a flat random pick), parks it, and
+        //                     Monster::die hands it back to the hand (Monster.cpp:308-309).
+        //                     Both halves are visible in the pile snapshots.
+        const std::vector<MonsterEncounter> batch28Encounters {
+            MonsterEncounter::BOOK_OF_STABBING,
+            MonsterEncounter::AUTOMATON,
+        };
+        act2Variants.push_back({batch24, seeds.size(), false, batch28Encounters});
     }
 
     for (const auto &v : variants) {
