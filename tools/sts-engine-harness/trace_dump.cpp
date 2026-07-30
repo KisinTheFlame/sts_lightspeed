@@ -2315,10 +2315,10 @@ int main() {
         //
         // Deck / seeds / ascension / target policy are variant 32's exactly, for variant 32's
         // reasons — and the SPOT_WEAKNESS matters more than usual this time: of the eight new
-        // moves, WRITHING_MASS_WITHER goes through attackPlayerHelper yet is NOT in the
-        // isMoveAttack whitelist (MonsterMoves.h:527-529 lists only FLAIL / MULTI_STRIKE /
-        // STRONG_STRIKE). That is the mirror image of batch 32's EXPLODER_EXPLODE case and is
-        // pinned by data rather than argued about — see the engine repo's TODOS "待裁定".
+        // moves, WRITHING_MASS_WITHER goes through attackPlayerHelper yet was NOT in the
+        // isMoveAttack whitelist. ⚠ THAT HAS SINCE BEEN PATCHED (batch 36 of the engine repo,
+        // see the FIXED comment on MonsterMoves.h's isMoveAttack), so writhing_mass.jsonl was
+        // legitimately regenerated in that batch under ALLOW_CHANGED="writhing_mass".
         const std::vector<MonsterEncounter> batch35Encounters {
             MonsterEncounter::WRITHING_MASS,  // MALLEABLE + REACTIVE share one chain slot
             MonsterEncounter::GIANT_HEAD,     // SLOW: +1 per card, x(1+0.1N), zeroed each round
@@ -2326,6 +2326,83 @@ int main() {
         std::vector<CardId> batch35Deck = BATCH_1;
         batch35Deck.push_back(CardId::SPOT_WEAKNESS);
         act3Variants.push_back({batch35Deck, 40, false, batch35Encounters});
+
+        // Variant 36: batch 36 of the engine repo — the two act-3 ELITES, paired because
+        // between them they close the last two "shape" gaps act 3 still had.
+        //
+        //   NEMESIS      -> MS::INTANGIBLE on the MONSTER side. Four cooperating sites, and
+        //                   the reference's own enum comment ("differs from the game in that
+        //                   it always decrements at end of round") says the shape is not the
+        //                   player's:
+        //                     * Monster::attacked  (Monster.cpp:418-422) and Monster::damage
+        //                       (:477-481) each clamp `damage = 1` BEFORE block absorption,
+        //                       and BEFORE the Angry hook — position is the whole observable
+        //                       surface of an onAttacked-family clause;
+        //                     * BattleContext::calculateCardDamage (:2768-2770) FLOORS the
+        //                       precomputed number at 1 — `std::max`, not `std::min`, and it
+        //                       sits AFTER Flight's x0.5;
+        //                     * Monster::applyEndOfTurnTriggers (:55-57) decrements it, the
+        //                       FOURTH statement (Metallicize / Malleable / Plated Armor /
+        //                       INTANGIBLE / Regen / Shackled).
+        //                   ⚠ And all three Nemesis moves re-apply it behind `if
+        //                   (!hasStatus<INTANGIBLE>())`, but ATTACK/SCYTHE do it with
+        //                   `addToBot(BuffEnemy)` AFTER `addToBot(RollMove)` while DEBUFF does
+        //                   it with a plain synchronous `buff<>()` AFTER a synchronous
+        //                   `rollMove(bc)` (MonsterSpecific.cpp:1585-1607). Same guard, three
+        //                   different queueing shapes.
+        //                   ⚠ NEMESIS_DEBUFF is also the project's first
+        //                   `MakeTempCardInDiscard(..., n).actFunc(bc)` on the MONSTER side
+        //                   (5/3 Burns, synchronous).
+        //   REPTOMANCER  -> THE FOURTH SUMMON FAMILY, and the fourth way of reserving slots:
+        //                     `++monsterCount; createMonster(DAGGER);
+        //                      createMonster(REPTOMANCER); ++monsterCount;
+        //                      createMonster(DAGGER);`      (MonsterGroup.cpp:339-345)
+        //                   leaves slots 0 and 3 empty, daggers at 1 and 4, the caster in the
+        //                   MIDDLE at 2, monsterCount = 5 / monstersAlive = 3. No other
+        //                   encounter in the reference has a 5-wide group or two separate
+        //                   holes with live monsters on both sides of them.
+        //                   ⚠ Monster::reptomancerSummon (MonsterSpecific.cpp:3589-3608)
+        //                   disagrees with all three earlier hosts on every axis: it is a
+        //                   member function called SYNCHRONOUSLY, the count is
+        //                   `asc18 ? 2 : 1` (the only ascension-dependent summon count), the
+        //                   search order is the hard-coded {4, 1, 3, 0}, the intent comes from
+        //                   `setMove(DAGGER_STAB)` while the aiRng is repaid by a
+        //                   `bc.noOpRollMove()` INSIDE the loop, and — uniquely — it sets
+        //                   `monsters.skipTurn` so a dagger dropped into a slot the turn
+        //                   cursor has not reached yet does NOT act this round. That bitset
+        //                   (MonsterGroup.h:24, read in MonsterGroup::doMonsterTurn :572-578
+        //                   and cleared in BattleContext.cpp:805 once every monster has acted)
+        //                   has exactly one writer in the whole reference and this is it.
+        //                   ⚠ Unlike BRONZE_ORB and TORCH_HEAD, DAGGER is BOTH pre-placed and
+        //                   summoned — two of them start on the field. So "the summon does not
+        //                   re-run preBattleAction" is provably a no-op here rather than a
+        //                   difference: DAGGER's preBattleAction is `buff<MINION>()`, which
+        //                   the summon already does by hand.
+        //                   ⚠ REPTOMANCER is also the LAST unregistered host of
+        //                   `hpDiscardRoll` (`hpRng.random(180, 190)` then
+        //                   `setRandomHp(hpRng, asc >= 8)`, MonsterSpecific.cpp:104-107).
+        //
+        // ⚠ WHY THESE TWO TOGETHER: Intangible lives in the damage-entry clamps and the
+        // end-of-turn triggers; the fourth summon family lives in createMonsters / one
+        // takeTurn case / the monster-turn loop. No shared statement, so a red diff still
+        // points at exactly one of them. And DAGGER_STAB / DAGGER_EXPLODE are both in the
+        // isMoveAttack whitelist while NEMESIS_DEBUFF and REPTOMANCER_SUMMON are not — the
+        // SPOT_WEAKNESS in the deck keeps that classification under an oracle, and
+        // DAGGER_EXPLODE in particular is the exact mirror of batch 32's EXPLODER_EXPLODE
+        // (same "hit the player, then SuicideAction" shape, opposite whitelist membership,
+        // because this one goes through attackPlayerHelper).
+        //
+        // ⚠⚠ FINGERPRINT COLLISION RULE (same as variants 32..35): deck + ascension +
+        // targetPolicy here are byte-identical to variants 24..29 and 32..35, so this
+        // encounter list must stay disjoint from all of theirs. NEMESIS and REPTOMANCER are
+        // named by no other variant, and JAW_WORM_HORDE is deliberately not here.
+        const std::vector<MonsterEncounter> batch36Encounters {
+            MonsterEncounter::NEMESIS,      // monster-side INTANGIBLE, 4 cooperating sites
+            MonsterEncounter::REPTOMANCER,  // summon family #4 + the skipTurn bitset
+        };
+        std::vector<CardId> batch36Deck = BATCH_1;
+        batch36Deck.push_back(CardId::SPOT_WEAKNESS);
+        act3Variants.push_back({batch36Deck, 40, false, batch36Encounters});
     }
 
     for (const auto &v : variants) {
