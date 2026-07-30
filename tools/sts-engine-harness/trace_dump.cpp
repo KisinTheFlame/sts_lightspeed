@@ -2619,6 +2619,76 @@ int main() {
             batch38Deck.push_back(c);
         }
         act3Variants.push_back({batch38Deck, 40, true, batch38Encounters});
+
+        // Variant 39: batch 39 of the engine repo — DONU AND DECA, act 3's third boss and
+        // THE LAST ACT-3 ENCOUNTER. 40 seeds, ascension 0, target policy 0, appended rather
+        // than folded into variant 38's encounter list (traceIdx drives the relic/potion
+        // rotation, so growing an earlier variant's list would invalidate everything after it).
+        //
+        //   DONU_AND_DECA -> MonsterGroup.cpp:235-238, two bare createMonster calls, and the
+        //                 ORDER IS THE REVERSE OF THE ENCOUNTER'S NAME:
+        //                     createMonster(bc, MonsterId::DECA);   // arr[0]
+        //                     createMonster(bc, MonsterId::DONU);   // arr[1]
+        //                 250 HP each ({{250,250},{265,265}}, setRandomHp at the asc>=9 BOSS
+        //                 tier), and they share ONE preBattleAction case
+        //                 (MonsterSpecific.cpp:195-198): `buff<MS::ARTIFACT>(asc19 ? 3 : 2)`.
+        //
+        //   ⚠⚠ THE PAIR IS THE POINT: these are the reference's only two monsters that buff
+        //   EACH OTHER, and the two halves have DIFFERENT SHAPES from the batch-26 pair
+        //   (Centurion / Mystic) they superficially resemble:
+        //     DECA_SQUARE_OF_PROTECTION (:1689-1699)
+        //         auto &deca = *this; auto &donu = bc.monsters.arr[1];
+        //         deca.addBlock(16); donu.addBlock(16);      // NO monstersAlive GATE AT ALL
+        //         if (asc19) { both buff<PLATED_ARMOR>(3); }
+        //         setMove(DECA_BEAM);
+        //     DONU_CIRCLE_OF_POWER (:1677-1681)
+        //         bc.monsters.arr[0].buff<MS::STRENGTH>(3); // "shouldn't matter if deca is dead"
+        //         buff<MS::STRENGTH>(3);                    // NO GATE either
+        //         setMove(DONU_BEAM);
+        //   Centurion's defend is `if (getAliveCount() > 1) arr[1].addBlock(...)` and Mystic's
+        //   heal/buff are `if (monstersAlive > 1) arr[0]...` — i.e. GATED. These two are not,
+        //   and the reference's own comment on the Donu line says so. That difference is
+        //   observable exactly when DECA is dead and DONU is not, which is what the deck below
+        //   was chosen to produce.
+        //
+        //   ⚠ All four moves are on a strict 2-cycle with NO rollMove after the opening one:
+        //   getMoveForRoll returns DECA_BEAM / DONU_CIRCLE_OF_POWER unconditionally
+        //   (:3272-3278, the roll is drawn and thrown away), and every takeTurn case ends with
+        //   a synchronous setMove. So coverage of the four moves is satisfied by turn 2 with
+        //   ANY deck — the deck question here is NOT "do the moves execute" (batches 37/38's
+        //   problem) but "does DECA ever die while DONU still lives".
+        //
+        // ⚠⚠ DECK: batch 38's 59-card upgraded deck, REUSED VERBATIM, and that was measured
+        // rather than assumed. Seven candidates over the same 120 traces (40 seeds x 3 floors):
+        //
+        //   deck                                    avg turns  wins  DECA died  frames where a
+        //                                                                        DEAD DECA's
+        //                                                                        Strength grew
+        //   BATCH_1 + SPOT_WEAKNESS (22, plain)        4.67       0     0 / 120         0
+        //   batch 37's focused deck (45, upgraded)     6.88       9    22 / 120        20
+        //   batch 38's deck (59, upgraded)  <-- THIS   7.44      32    56 / 120        58
+        //   single-target tuned (53, upgraded)         7.17       7    43 / 120        35
+        //   batch 38 + 4 HEAVY_BLADE + 2 IMPERVIOUS    7.52      23    44 / 120        53
+        //   batch 38 - HAVOC/DOUBLE_TAP + 4 H.BLADE    6.87      14    35 / 120        28
+        //   batch 38 + 4 GHOSTLY + 4 IMPERVIOUS        8.83      13    37 / 120        34
+        //
+        // The 22-card standard is structurally unbacked here for the same reason as batches
+        // 37/38 — 500 HP of boss behind 16 Block every other turn while both of them ramp +3
+        // Strength a round — but note WHAT is unbacked: not the moves (all four execute even
+        // there, 1637/1041/973/1705 intent frames) but the ungated ally buff. Adding cards
+        // beyond batch 38's 59 makes things WORSE: every extra card dilutes the draw, and the
+        // two survival-leaning variants trade DECA kills for turns.
+        //
+        // ⚠⚠ FINGERPRINT COLLISION RULE, and this variant is the case the rule exists for:
+        // its deck + ascension + targetPolicy are BYTE-IDENTICAL to variant 38's, so the two
+        // encounter lists MUST be disjoint or split-traces.mjs would drop both variants' rows
+        // into one file and variant0-rows.mjs would silently report a longer frozen prefix.
+        // They are: variant 38 names TIME_EATER only, this one names DONU_AND_DECA only.
+        // (Same situation as variants 24..29, which all shared BATCH_1 + SPOT_WEAKNESS.)
+        const std::vector<MonsterEncounter> batch39Encounters {
+            MonsterEncounter::DONU_AND_DECA,  // the ungated mutual buff/block pair
+        };
+        act3Variants.push_back({batch38Deck, 40, true, batch39Encounters});
     }
 
     for (const auto &v : variants) {
