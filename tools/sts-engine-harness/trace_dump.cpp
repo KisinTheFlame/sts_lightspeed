@@ -1579,6 +1579,56 @@ int main() {
             MonsterEncounter::SENTRY_AND_SPHERE,
         };
         act2Variants.push_back({batch24, seeds.size(), false, batch26Encounters});
+
+        // Variant 27: batch 27 of the engine repo — SUMMONING (Gremlin Leader) and the two
+        // act-2 elite encounters that need it.
+        //
+        // Deck / seeds / ascension are variant 24/25/26's exactly (BATCH_1 + one SPOT_WEAKNESS,
+        // all 125 seeds, un-upgraded, ascension 0), appended rather than folded into an
+        // existing variant's encounter list (traceIdx drives the relic/potion rotation).
+        // The Spot Weakness copy carries forward for the usual reason: it is the only reader of
+        // Monster::isAttacking() -> isMoveAttack (MonsterMoves.h:414-535). New moves this batch:
+        // GREMLIN_LEADER_STAB (:459) and TASKMASTER_SCOURING_WHIP (:512) are in the whitelist,
+        // GREMLIN_LEADER_ENCOURAGE / GREMLIN_LEADER_RALLY are not.
+        //
+        // ⚠ Decks 24/25/26/27 are byte-identical and split-traces.mjs / variant0-rows.mjs
+        //   fingerprint a variant by its DECK CONTENTS — safe only because the four encounter
+        //   lists are pairwise DISJOINT (see the note on variant 25). Neither encounter here is
+        //   covered by an earlier variant.
+        //
+        // The two encounters:
+        //   GREMLIN_LEADER   two random gremlins in slots 1 and 2 (getGremlin(miscRng), 8-entry
+        //                    table with duplicates) plus the Leader in slot 3, and
+        //                    `monsterCount = 4` with `monstersAlive = 3` — SLOT 0 IS NEVER
+        //                    CONSTRUCTED (MonsterGroup.cpp:248-259). That reserved hole is what
+        //                    Actions::SummonGremlins (Actions.cpp:459-497) fills: it scans for
+        //                    dying slots in the order 1, 2, 0, takes the first TWO, rebuilds
+        //                    them from scratch (`= Monster()`), picks each species off
+        //                    getGremlin(**aiRng**, not miscRng), bumps monstersAlive by 2, marks
+        //                    both MINION and rollMoves each. monsterCount never moves, and
+        //                    preBattleAction is NOT re-run — a summoned Mad Gremlin therefore
+        //                    has no ANGRY, unlike one built by GREMLIN_GANG.
+        //                    The Leader itself carries MINION_LEADER (MonsterSpecific.cpp:168),
+        //                    which Monster::die reads: `monstersAlive == 0 ||
+        //                    hasStatus<MINION_LEADER>()` -> PLAYER_VICTORY and an immediate
+        //                    return (Monster.cpp:293-297), so killing the Leader ends the fight
+        //                    with its minions still standing.
+        //                    ENCOURAGE burns one aiRng.random(0,2) for an in-game quote, then
+        //                    walks slots 0..2 synchronously (buff + block), then buffs itself.
+        //   SLAVERS          Blue Slaver (slot 0), TASKMASTER (slot 1), Red Slaver (slot 2)
+        //                    — note the ORDER (MonsterGroup.cpp:366-370): the Taskmaster is in
+        //                    the MIDDLE, not first. Its only move whips for 7 and queues
+        //                    MakeTempCardInDiscard({WOUND}), then ends with a SYNCHRONOUS
+        //                    bc.noOpRollMove() (:1234-1247). WOUND is unplayable
+        //                    (CardInstance.cpp:329 excepts only SLIMED), so it only ever sits in
+        //                    the discard pile — which the snapshot dumps. It is also the first
+        //                    three-monster act-2 group, so the Red Slaver's entangle and the
+        //                    Blue Slaver's rake are exercised alongside a third body.
+        const std::vector<MonsterEncounter> batch27Encounters {
+            MonsterEncounter::GREMLIN_LEADER,
+            MonsterEncounter::SLAVERS,
+        };
+        act2Variants.push_back({batch24, seeds.size(), false, batch27Encounters});
     }
 
     for (const auto &v : variants) {
