@@ -525,6 +525,29 @@ namespace sts {
             case MMID::TIME_EATER_HEAD_SLAM:
             case MMID::TRANSIENT_ATTACK:
             case MMID::WRITHING_MASS_FLAIL:
+            // FIXED: WRITHING_MASS_WITHER was missing from this whitelist.
+            //
+            // The rule this switch encodes is "the move deals its damage through
+            // attackPlayerHelper() / Actions::AttackPlayer" — that is what makes
+            // Monster::isAttacking() true, which is what the player-side "attacking?" checks
+            // (Spot Weakness, Panic Button, ...) read. Wither's body is
+            //     attackPlayerHelper(bc, asc2 ? 12 : 10);
+            //     bc.addToBot( Actions::DebuffPlayer<PS::WEAK>(2, true) );
+            //     bc.addToBot( Actions::DebuffPlayer<PS::VULNERABLE>(2, true) );
+            //     bc.addToBot( Actions::RollMove(idx) );    (MonsterSpecific.cpp:1560-1565)
+            // so by that rule it belongs here.
+            //
+            // Evidence that this is a typo and not a deliberate exclusion:
+            //   * Scanning every move that reaches attackPlayerHelper, WRITHING_MASS_WITHER is
+            //     the ONLY one absent from this list. (Everything that looks like a reverse
+            //     exception is either Actions::DamagePlayer — EXPLODER_EXPLODE, which is
+            //     correctly excluded because non-attack damage really is not an attack — or
+            //     SHELLED_PARASITE_SUCK, which uses Actions::VampireAttack.)
+            //   * Every sibling "attack + debuff" move IS listed: CHOSEN_DEBILITATE,
+            //     SPHERIC_GUARDIAN_ATTACK_DEBUFF, MYSTIC_ATTACK_DEBUFF, SNECKO_TAIL_WHIP.
+            //     Wither has exactly that shape (damage, then a debuff on the player).
+            //   * The real game shows Wither as an attack+debuff intent.
+            case MMID::WRITHING_MASS_WITHER:
             case MMID::WRITHING_MASS_MULTI_STRIKE:
             case MMID::WRITHING_MASS_STRONG_STRIKE:
                 return true;
