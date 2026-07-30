@@ -2117,6 +2117,55 @@ int main() {
         std::vector<CardId> batch32Deck = BATCH_1;
         batch32Deck.push_back(CardId::SPOT_WEAKNESS);
         act3Variants.push_back({batch32Deck, 40, false, batch32Encounters});
+
+        // Variant 33: batch 33 of the engine repo — three act-3 SINGLE-MONSTER encounters
+        // whose monsters are assembled entirely out of PRIMITIVES THAT ARE ALREADY REGISTERED
+        // engine-side. Nothing here changes turn structure, so it is the cheapest act-3 batch
+        // still on the table after the shapes.
+        //
+        //   ORB_WALKER     -> Monster::initHp's "roll once and THROW IT AWAY, then roll for
+        //                     real" family (MonsterSpecific.cpp:32-35). The reference comments
+        //                     `// first call is discarded by game` on THIS monster and no
+        //                     other, so it is the canonical host of `hpDiscardRoll`
+        //                     (already shipped for TASKMASTER/BRONZE_ORB in batches 27/28).
+        //                     Also the ONLY host of MS::GENERIC_STRENGTH_UP in the whole
+        //                     project (Monster.cpp:103-105: +N strength at end of every
+        //                     round). Its laser stuffs one BURN into the DRAW pile and one
+        //                     into the DISCARD pile — two different card actions in one case.
+        //   SPIRE_GROWTH   -> plain setRandomHp. Brings PS::CONSTRICTED, which is a pure
+        //                     number: Player::applyEndOfTurnPowers just does
+        //                     `addToBot(DamagePlayer(amount))` (Player.cpp:374-376). No decay,
+        //                     no removal, so its move can fire at most once per battle.
+        //   MAW            -> the SECOND host of `hpNoRoll` (MonsterSpecific.cpp:119-124,
+        //                     alongside SPHERIC_GUARDIAN from batch 23) — it burns zero
+        //                     monsterHpRng. Its Nom is the project's first multi-hit whose
+        //                     HIT COUNT is derived from the turn number:
+        //                     `attackPlayerHelper(bc, 5, (getMonsterTurnNumber()+1)/2)`.
+        //
+        // ⚠ The Maw's intent chain is what makes all four of its moves reachable in one
+        // batch: NOM ends with `setMove(DROOL); noOpRollMove();` (sync, MonsterSpecific.cpp:
+        // 1439-1445), so DROOL is forced right after every NOM, while DROOL and ROAR both end
+        // with a bare synchronous `rollMove(bc)` and SLAM with the ordinary queued RollMove.
+        // Three of the six turn-end shapes on one monster.
+        //
+        // ⚠⚠ FINGERPRINT COLLISION RULE (same as variant 32): deck + ascension +
+        // targetPolicy here are byte-identical to variants 24..29 and 32, so this encounter
+        // list must stay disjoint from all of theirs. ORB_WALKER / SPIRE_GROWTH / MAW are
+        // named by no other variant, and JAW_WORM_HORDE is deliberately not here.
+        //
+        // Deck / seeds / ascension / target policy are variant 32's exactly, for variant 32's
+        // reasons — in particular the SPOT_WEAKNESS keeps Monster::isAttacking() under an
+        // oracle, which this batch needs twice over: SPIRE_GROWTH_CONSTRICT, THE_MAW_ROAR and
+        // THE_MAW_DROOL are NOT in the isMoveAttack whitelist while THE_MAW_NOM is, and the
+        // whitelist is hand-transcribed.
+        const std::vector<MonsterEncounter> batch33Encounters {
+            MonsterEncounter::ORB_WALKER,    // hpDiscardRoll + GENERIC_STRENGTH_UP + BURN x2
+            MonsterEncounter::SPIRE_GROWTH,  // CONSTRICTED
+            MonsterEncounter::MAW,           // hpNoRoll + turn-scaled multi-hit
+        };
+        std::vector<CardId> batch33Deck = BATCH_1;
+        batch33Deck.push_back(CardId::SPOT_WEAKNESS);
+        act3Variants.push_back({batch33Deck, 40, false, batch33Encounters});
     }
 
     for (const auto &v : variants) {
