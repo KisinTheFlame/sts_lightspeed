@@ -161,8 +161,24 @@ static std::string snapshot(const BattleContext &bc) {
            << "," << q("hp") << ":" << m.curHp
            << "," << q("maxHp") << ":" << m.maxHp
            << "," << q("block") << ":" << m.block
-           << "," << q("alive") << ":" << (m.isDeadOrEscaped() ? "false" : "true")
-           << "," << q("move") << ":" << q(monsterMoveStrings[static_cast<int>(m.moveHistory[0])])
+           << "," << q("alive") << ":" << (m.isDeadOrEscaped() ? "false" : "true");
+        // isDeadOrEscaped() is three bits ORed together (Monster.cpp:253) and `alive` above
+        // collapses them, but ONE of the three changes what happens next:
+        // MonsterGroup::doMonsterTurn's gate is `(!isDeadOrEscaped() || isHalfDead())`
+        // (MonsterGroup.cpp:572), so a HALF-DEAD monster still takes its turn while a dead or
+        // escaped one does not. Darkling's Regrow and the Awakened One's fake death are the
+        // two producers; a Darkling sits half-dead for two monster turns (Regrow, then
+        // Reincarnate) with curHp 0 and alive=false, which is indistinguishable from a corpse
+        // unless this bit is emitted.
+        //
+        // Emitted ONLY when true, exactly like `deckUpgraded` / `ascension` / `goldGained` /
+        // `playerHp`: no monster in any previously committed encounter can be half-dead
+        // (nothing registered before batch 34 carries MS::REGROW and the Awakened One is not
+        // installed), so every frozen file stays byte-identical. regen-traces.sh verifies that.
+        if (m.isHalfDead()) {
+            os << "," << q("halfDead") << ":true";
+        }
+        os << "," << q("move") << ":" << q(monsterMoveStrings[static_cast<int>(m.moveHistory[0])])
            << "," << q("powers") << ":" << monsterStatuses(m)
            << "}";
     }
@@ -2166,6 +2182,73 @@ int main() {
         std::vector<CardId> batch33Deck = BATCH_1;
         batch33Deck.push_back(CardId::SPOT_WEAKNESS);
         act3Variants.push_back({batch33Deck, 40, false, batch33Encounters});
+
+        // Variant 34: batch 34 of the engine repo — the two act-3 encounters that carry
+        // DEATH-AND-TURN-BOUNDARY machinery, paired because they do not interact at all.
+        //
+        //   THREE_DARKLINGS -> MS::REGROW and, through it, `Monster::halfDead` — the THIRD
+        //                     bit of isDeadOrEscaped() (Monster.cpp:253), which has had zero
+        //                     oracle since batch 15 skipped it while doing escape. The
+        //                     Regrow branch is the MIDDLE slot of Monster::die's else-if
+        //                     chain (`SPORE_CLOUD -> REGROW -> STASIS`, Monster.cpp:299-310);
+        //                     batch 28 installed STASIS and deliberately left that gap, so
+        //                     this batch is what pins the chain's SHAPE, not just one arm.
+        //                     ⚠ Three Darklings are each other's companions, so "dies while
+        //                     a companion is still up" is the COMMON case here — the exact
+        //                     precondition every death trigger needs (Monster::die returns
+        //                     early on the victory branch). A single-Darkling encounter does
+        //                     not exist, and with one monster the Regrow arm would be
+        //                     structurally unreachable.
+        //                     ⚠ Its getMoveForRoll is also the only one in the whole
+        //                     reference that reads the monster's OWN INDEX: `idx != 1` gates
+        //                     Chomp, so the middle Darkling behaves differently from its two
+        //                     siblings. And it is the only one that RECURSES
+        //                     (`getMoveForRoll(bc, monsterData, bc.aiRng.random(0, 99))`),
+        //                     so a single rollMove can burn 1, 2 or more aiRng draws.
+        //                     ⚠ Darkling is also the SECOND monster with a species special
+        //                     case in Monster::construct (`miscInfo = monsterHpRng.random(
+        //                     7, 11)`, Monster.cpp:124-130) — the Louse is the first, and the
+        //                     RANGES DIFFER, so copying the neighbour is wrong.
+        //   TRANSIENT       -> MS::SHIFTING (the LAST slot of attackedUnblockedHelper's
+        //                     else-if chain, Monster.cpp:393-396: `addDebuff<STRENGTH>
+        //                     (-damage); buff<SHACKLED>(damage);`) and MS::FADING (a plain
+        //                     counter that ONLY decrements in the monster's own move, and
+        //                     whose value 1 queues `SuicideAction(idx, FALSE)` — the other
+        //                     arm of that action, which skips Monster::die entirely).
+        //                     ⚠ The engine repo has implemented the first SEVEN slots of that
+        //                     else-if chain (Invincible/Plated Armor/Curl Up/Flight/Malleable
+        //                     +Reactive/Thorns/Asleep). Shifting is slot eight, and position
+        //                     on that chain is the entire observable surface of any member.
+        //                     ⚠ TRANSIENT is also the THIRD and final host of `hpNoRoll`
+        //                     (MonsterSpecific.cpp:119-124) — 999 HP, zero monsterHpRng —
+        //                     and the ONLY monster named by the main loop's can't-win check
+        //                     (`monsters.arr[0].id != MonsterId::TRANSIENT`,
+        //                     BattleContext.cpp:790).
+        //
+        // ⚠ WHY THESE TWO TOGETHER: Regrow lives in Monster::die, Shifting in
+        // attackedUnblockedHelper, Fading in one takeTurn case. No shared statement, so a
+        // red diff still points at exactly one of them. They do share the `halfDead`/`alive`
+        // bookkeeping ONLY in the sense that both change how a monster leaves the field, and
+        // the engine models both against the same `isDeadOrEscaped` decomposition — which is
+        // precisely why it is worth checking them against one oracle run.
+        //
+        // ⚠⚠ FINGERPRINT COLLISION RULE (same as variants 32/33): deck + ascension +
+        // targetPolicy here are byte-identical to variants 24..29, 32 and 33, so this
+        // encounter list must stay disjoint from all of theirs. THREE_DARKLINGS and TRANSIENT
+        // are named by no other variant, and JAW_WORM_HORDE is deliberately not here.
+        //
+        // Deck / seeds / ascension / target policy are variant 32's exactly, for variant 32's
+        // reasons — the SPOT_WEAKNESS in particular keeps Monster::isAttacking() under an
+        // oracle, which this batch needs: of the six new moves only DARKLING_NIP,
+        // DARKLING_CHOMP and TRANSIENT_ATTACK are in the isMoveAttack whitelist, while
+        // DARKLING_HARDEN / DARKLING_REGROW / DARKLING_REINCARNATE are not.
+        const std::vector<MonsterEncounter> batch34Encounters {
+            MonsterEncounter::THREE_DARKLINGS,  // REGROW + halfDead, idx-aware move rules
+            MonsterEncounter::TRANSIENT,        // SHIFTING + FADING, hpNoRoll #3
+        };
+        std::vector<CardId> batch34Deck = BATCH_1;
+        batch34Deck.push_back(CardId::SPOT_WEAKNESS);
+        act3Variants.push_back({batch34Deck, 40, false, batch34Encounters});
     }
 
     for (const auto &v : variants) {
