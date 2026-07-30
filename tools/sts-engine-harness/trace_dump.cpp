@@ -1772,6 +1772,77 @@ int main() {
             MonsterEncounter::COLLECTOR,
         };
         act2Variants.push_back({batch24, seeds.size(), false, batch29Encounters});
+
+        // Variant 30: ASCENSION 19 across ALL NINETEEN act-2 encounters. Batch 30 of the engine
+        // repo — the act-2 counterpart of variants 21/22 (which did act 1 at 19).
+        //
+        // WHY A WHOLE NEW VARIANT RATHER THAN AN `ascension` FLIP ON 23..29. Same rule as
+        // everywhere else in this file: traceIdx is assigned by walking variants x encounters in
+        // declaration order and it drives the relic/potion rotation, so touching an existing
+        // variant would shift every index after it. Appending only adds indices at the end, so
+        // all 19 committed act-2 asc-0 files stay byte-identical (verified: `--check` reproduced
+        // all 59 files before this variant was added, and again after).
+        //
+        // WHY THE ENCOUNTER LIST MAY OVERLAP 23..29 HERE, WHEN 24..29 HAD TO BE DISJOINT.
+        // split-traces.mjs fingerprints a variant by DECK CONTENTS **plus ascension**, and it
+        // groups rows by `encounter + (ascension ? "@asc"+N : "")`. So this variant's rows land
+        // in nineteen NEW files (`<enc>@asc19.jsonl`) with a distinct fingerprint. The
+        // disjointness rule bit variants 24..29 only because their decks AND ascension were all
+        // identical; here ascension differs, so the collision cannot happen.
+        //
+        // WHY ASCENSION 19 AND ONLY 19 — and what that deliberately does NOT buy.
+        // Every ascension condition these 17 monsters read is `asc >= N` with
+        // N in {2,3,4,7,8,9,17,18,19}, so one run at 19 takes the HIGH side of all of them while
+        // the committed 125-seed asc-0 corpus pins the LOW side. Two things stay out of scope,
+        // and BOTH need a level in the middle rather than a second high one:
+        //   * "the boundary is exactly N, not N±1" — needs a PAIR of adjacent levels;
+        //   * "the middle of a three-tier `{a,b,c}[getTriIdx(...)]`" — at {0,19} the middle
+        //     tier is unreachable by construction.
+        // In particular THE CHAMP carries two different tier families at once:
+        // DEFENSIVE_STANCE uses getTriIdx(asc, 9, 19) while ANGER/GLOAT use bossDiffIdx
+        // (asc 4/19). At 19 both return 2, so 19 cannot tell them apart — separating them needs
+        // a level in [4, 9). The engine repo schedules that as its own batch (asc7 + asc16,
+        // which also lights the middle tier of the {2,17}/{3,18}/{4,19}/{9,19} families across
+        // BOTH acts) rather than smuggling a second level in here.
+        //
+        // WHY THE SAME DECK AND SEED COUNT AS THE ACT-2 ASC-0 VARIANTS. Deck is variants 24..29's
+        // byte-for-byte (BATCH_1 + one SPOT_WEAKNESS) so that ascension is the ONLY variable
+        // between an `<enc>.jsonl` line and an `<enc>@asc19.jsonl` line; the Spot Weakness copy
+        // also keeps Monster::isAttacking() under an oracle at this level. 40 seeds rather than
+        // 125 for variant 21's reason: ascension branches are overwhelmingly constant
+        // substitutions (`asc2 ? 12 : 11`), so seed diversity buys much less here than it does
+        // for the intent rolls that the asc-0 variants exist to cover.
+        //
+        // ⚠ THREE STRUCTURAL CONSEQUENCES OF LEVEL 19 ON THESE ENCOUNTERS (all as-built, and all
+        // recorded in the engine repo's TODOS so nobody reads a 0 as a transcription slip):
+        //   * BRONZE_AUTOMATON_STUNNED becomes UNREACHABLE — HYPER_BEAM's tail is
+        //     `if (asc19) setMove(BOOST); else setMove(STUNNED);` (MonsterSpecific.cpp:492-500).
+        //     Its asc-0 evidence stands; there simply is no stun at 19.
+        //   * TASKMASTER_SCOURING_WHIP gains an EXTRA queued self-buff at asc18
+        //     (`addToBot(Actions::BuffEnemy<MS::STRENGTH>(idx, 1))`, :1237) — a whole extra
+        //     statement, not a changed number, and the only queued self-buff in the data tables.
+        //   * BOOK_OF_STABBING's two `if (asc18) { ++stabCount; }` statements sit AFTER a
+        //     `return` (:2304-2307 / :2310-2313) and stay dead at 19. This corpus therefore
+        //     backs the as-built behaviour (no increment); it says nothing about whether the real
+        //     game increments, which is still an open ruling in the engine repo.
+        const std::vector<MonsterEncounter> asc19Act2Encounters {
+            // weak pool
+            MonsterEncounter::SPHERIC_GUARDIAN, MonsterEncounter::CHOSEN,
+            MonsterEncounter::SHELL_PARASITE,   MonsterEncounter::THREE_BYRDS,
+            MonsterEncounter::TWO_THIEVES,
+            // strong pool
+            MonsterEncounter::CHOSEN_AND_BYRDS, MonsterEncounter::SENTRY_AND_SPHERE,
+            MonsterEncounter::CULTIST_AND_CHOSEN, MonsterEncounter::THREE_CULTIST,
+            MonsterEncounter::SHELLED_PARASITE_AND_FUNGI, MonsterEncounter::SNECKO,
+            MonsterEncounter::SNAKE_PLANT,      MonsterEncounter::CENTURION_AND_HEALER,
+            // elites
+            MonsterEncounter::GREMLIN_LEADER,   MonsterEncounter::SLAVERS,
+            MonsterEncounter::BOOK_OF_STABBING,
+            // bosses
+            MonsterEncounter::CHAMP,            MonsterEncounter::COLLECTOR,
+            MonsterEncounter::AUTOMATON,
+        };
+        act2Variants.push_back({batch24, 40, false, asc19Act2Encounters, 19});
     }
 
     for (const auto &v : variants) {
