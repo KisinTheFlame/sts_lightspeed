@@ -199,14 +199,53 @@ static std::string snapshot(const BattleContext &bc) {
 
 // ---------------------------------------------------------------- policy
 
-// Deterministic: play the lowest-index playable card at the lowest-index living
-// monster; when nothing is playable, end the turn. Recorded verbatim, so the TS side
-// never re-derives it.
+// Deterministic: play the lowest-index playable card at the living monster the variant's
+// TARGET POLICY names; when nothing is playable, end the turn. Recorded verbatim, so the
+// TS side never re-derives it.
 static int firstAliveMonster(const BattleContext &bc) {
     for (int i = 0; i < bc.monsters.monsterCount; ++i) {
         if (!bc.monsters.arr[i].isDeadOrEscaped()) return i;
     }
     return 0;
+}
+
+// The MIRROR of firstAliveMonster: the HIGHEST-index living monster.
+//
+// WHY THIS EXISTS (batch 31 of the engine repo). Until now every trace in the corpus
+// attacked slot 0 first, so in a multi-monster group the LAST monster to die was always the
+// highest-index one. Whole families of reference behaviour are gated on "a companion died
+// before me" and were therefore structurally unreachable at ANY deck, ANY encounter, ANY
+// ascension — the purest case being CENTURION_FURY, which the Centurion only rolls when the
+// Mystic is already dead while CENTURION_AND_HEALER (the only encounter in the whole
+// reference that contains a Centurion) puts the Centurion at slot 0.
+//
+// Picking the LAST living monster is the exact opposite of the existing policy, which
+// maximises the information gained: it reverses the death order in every multi-monster
+// group rather than merely perturbing it.
+//
+// Same predicate (isDeadOrEscaped) and same `return 0` fallback as firstAliveMonster, so
+// the two agree by construction whenever exactly one monster is alive — which is why
+// single-monster encounters are deliberately NOT run under this policy (see the variant
+// below): the two policies would emit byte-identical traces.
+//
+// ⚠ Reserved-but-never-constructed slots (Gremlin Leader's slot 0, the Automaton's slots
+// 0/2, the Collector's slots 0/1) hold a default Monster whose curHp is 0, so
+// isDeadOrEscaped() is true for them and the scan skips them from EITHER end. That is what
+// makes a backwards scan safe without a separate `idx != -1` test.
+static int lastAliveMonster(const BattleContext &bc) {
+    for (int i = bc.monsters.monsterCount - 1; i >= 0; --i) {
+        if (!bc.monsters.arr[i].isDeadOrEscaped()) return i;
+    }
+    return 0;
+}
+
+// Target policy, as stored on a DeckVariant. 0 is the historical behaviour, so every
+// variant declared before this axis existed keeps emitting byte-identical traces.
+enum class TargetPolicy { FIRST_ALIVE = 0, LAST_ALIVE = 1 };
+
+static int policyTarget(const BattleContext &bc, int targetPolicy) {
+    return targetPolicy == static_cast<int>(TargetPolicy::LAST_ALIVE) ? lastAliveMonster(bc)
+                                                                     : firstAliveMonster(bc);
 }
 
 struct Step { std::string type; int idx; int target; std::vector<int> idxs; };
@@ -392,8 +431,8 @@ static bool pickCardSelectAction(const BattleContext &bc, Step &out) {
     return false;
 }
 
-static bool pickAction(const BattleContext &bc, Step &out) {
-    const int target = firstAliveMonster(bc);
+static bool pickAction(const BattleContext &bc, int targetPolicy, Step &out) {
+    const int target = policyTarget(bc, targetPolicy);
     // Drink before attacking, so potion buffs are visible in the same turn's card maths.
     for (int i = 0; i < bc.potionCapacity; ++i) {
         if (bc.potions[i] == Potion::EMPTY_POTION_SLOT) continue;
@@ -520,6 +559,17 @@ int main() {
         // potionCapacity 3 -> 2 (the potion loop below reads bc.potionCapacity, so that
         // one follows automatically).
         int ascension = 0;
+        // Which living monster the policy attacks. DEFAULTS TO 0 (= firstAliveMonster,
+        // the historical behaviour), so every variant declared before this field existed
+        // keeps emitting byte-identical traces — exactly the trick `ascension` uses.
+        //
+        // Why this axis exists (batch 31): see lastAliveMonster above. 0 = lowest-index
+        // living monster, 1 = highest-index living monster.
+        //
+        // ⚠ It is a per-VARIANT knob rather than a per-trace one for the same reason
+        // ascension is: it has to be constant for a whole file, because the file is what
+        // the engine repo's tools freeze and compare.
+        int targetPolicy = 0;
     };
 
     // Batch 1 (already registered, verified by the committed variant-0 traces).
@@ -1972,6 +2022,19 @@ int main() {
                 if (variant.ascension != 0) {
                     std::cout << "," << q("ascension") << ":" << variant.ascension;
                 }
+                // Same trick again, for the target-policy axis (batch 31). Emitted only
+                // when non-zero, so every line generated under the historical
+                // firstAliveMonster policy stays byte-identical to what is committed —
+                // which is what lets tools/regen-traces.sh --check prove this axis is a
+                // no-op for the existing corpus BEFORE any new variant is added.
+                //
+                // ⚠ The replayer does NOT need to read this field: the chosen target is
+                // already recorded verbatim in every `card` / `potion` step. It exists so
+                // that split-traces.mjs can put these traces in their own files and so a
+                // reader can tell which policy produced a line.
+                if (variant.targetPolicy != 0) {
+                    std::cout << "," << q("targetPolicy") << ":" << variant.targetPolicy;
+                }
                 // Player HP *entering* the fight, i.e. gc.curHp BEFORE BattleContext::init.
                 //
                 // The `initial` snapshot is taken AFTER init, and init already ran
@@ -2020,7 +2083,7 @@ int main() {
                         // A card-select screen is open — answer it before anything else.
                         if (!pickCardSelectAction(bc, s)) break;
                     } else if (bc.inputState == InputState::PLAYER_NORMAL) {
-                        pickAction(bc, s);
+                        pickAction(bc, variant.targetPolicy, s);
                     } else {
                         // Stance / gambling / scry screens still have no trace encoding;
                         // stop rather than emit something the replayer cannot express.
