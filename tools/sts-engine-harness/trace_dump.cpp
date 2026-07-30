@@ -2514,6 +2514,111 @@ int main() {
             batch37Deck.push_back(c);
         }
         act3Variants.push_back({batch37Deck, 40, true, batch37Encounters});
+
+        // Variant 38: batch 38 of the engine repo — TIME EATER, act 3's second boss and the
+        // first monster in the whole project that changes the TURN STRUCTURE.
+        //
+        // 40 seeds, ascension 0, target policy 0, appended rather than folded into variant
+        // 37's encounter list (traceIdx drives the relic/potion rotation).
+        //
+        //   TIME_EATER -> one monster, 456 HP (MonsterGroup.cpp:441-443, a bare
+        //                 createMonster). preBattleAction is a single `buff<MS::TIME_WARP>(0)`
+        //                 (MonsterSpecific.cpp:223-226), i.e. the "present, amount 0" shape
+        //                 that Writhing Mass's REACTIVE and Giant Head's SLOW also use — it is
+        //                 therefore INVISIBLE in the opening snapshot.
+        //
+        //   ⚠⚠ TIME_WARP settles in BattleContext::onAfterUseCard (BattleContext.cpp:1974-1985),
+        //   INSIDE the `if (item.triggerOnUse)` gate, reading a hardcoded `monsters.arr[0]`:
+        //       if (timeWarp == 11) { setStatus(0); buff<STRENGTH>(2); callEndTurnEarlySequence(); }
+        //       else                { setStatus(timeWarp + 1); ++timeWarp; }
+        //   Three things to copy verbatim: the threshold is `== 11` (so it fires on the 12th
+        //   card played, not the 11th); `++timeWarp` is a LOCAL that nobody reads afterwards
+        //   (dead code, transcribe as nothing); and callEndTurnEarlySequence (:2152-2161) ENDS
+        //   THE PLAYER'S TURN IN THE MIDDLE OF A CARD PLAY. That last one is the batch's whole
+        //   blast radius — it drains the card queue, turning `autoplay && !purgeOnUse` items
+        //   into Actions::TimeEaterPlayCardQueueItem (which re-runs onAfterUseCard with
+        //   triggerOnUse = false, so the card is DISCARDED WITHOUT BEING PLAYED) and dropping
+        //   everything else, then pushes an end-turn item to the FRONT of the card queue.
+        //
+        //   The other three moves bring one new player-side debuff and two shapes:
+        //     REVERBERATE  attackPlayerHelper(bc, asc4 ? 8 : 7, 3), queued RollMove.
+        //     HEAD_SLAM    attackPlayerHelper(bc, asc4 ? 32 : 26) + queued
+        //                  DebuffPlayer<PS::DRAW_REDUCTION>(1, true). DRAW_REDUCTION is new:
+        //                  Player::debuff IGNORES the amount and just does `--cardDrawPerTurn`
+        //                  + setHasStatus (Player.h:385-390), and afterMonsterTurns gives it
+        //                  back one turn later, AFTER the DrawCards action has already been
+        //                  queued with the reduced count (BattleContext.cpp:2227-2233).
+        //     RIPPLE       synchronous addBlock(20) + three bare `bc.player.debuff<...>(1,true)`
+        //                  calls, ending with a SYNCHRONOUS REAL rollMove(bc) — the sixth
+        //                  turn-end shape (same as Maw's roar, not the noOpRollMove family).
+        //     HASTE        `miscInfo = true; curHp = maxHp/2; if (asc19) addBlock(32);
+        //                  removeDebuffs(); rollMove(bc);` — an ASSIGNMENT to curHp, not
+        //                  Monster::heal, and a one-shot (its own latch closes the roll-table
+        //                  gate `!usedHaste && curHp < maxHp/2`).
+        //   isMoveAttack (MonsterMoves.h:524-525) holds REVERBERATE and HEAD_SLAM only.
+        //
+        // ⚠⚠ THE DECK IS THE SECOND ONE CHOSEN BY MEASUREMENT RATHER THAN HABIT (batch 37 was
+        // the first), and it was measured over the same 120 traces (40 seeds x 3 floors):
+        //
+        //   deck                                   avg turns  TIME_WARP fires  < half HP  HASTE appear/exec
+        //   BATCH_1 + SPOT_WEAKNESS (22)              4.89          122          1 / 120        0 / 0
+        //   batch 37's focused deck (45, upgraded)    7.70          240         66 / 120      154 / 25
+        //   + 4 FLASH_OF_STEEL + 4 FINESSE (53)       7.82          312         71 / 120      242 / 35
+        //   this deck (59, upgraded)                  7.28          333         70 / 120      196 / 24
+        //
+        // The 22-card deck is not merely thin, it is STRUCTURALLY UNBACKED: the Time Eater
+        // never reaches 228 HP, so HASTE comes back "appeared 0 / executed 0" and
+        // check-coverage.mjs refuses the install. (TIME_WARP itself does fire there — 122
+        // times — because it counts CARDS PLAYED, not damage.)
+        //
+        // ⚠ Two deck decisions beyond raw power, both aimed at code that would otherwise have
+        // no oracle at all:
+        //  ① 0-COST CANTRIPS (FLASH_OF_STEEL / FINESSE, 6 each). TIME_WARP counts cards, so
+        //     cards-per-turn is the knob, and both of these draw a replacement. That is what
+        //     takes the fire count from 240 to 330-ish and, with it, the number of turns that
+        //     end mid-play (201 -> 288 turn-advancing card steps).
+        //  ② HAVOC x4 and DOUBLE_TAP x2. These are the ONLY two producers in the whole project
+        //     of a NON-EMPTY CARD QUEUE at the moment onAfterUseCard runs — Havoc pushes an
+        //     `autoplay` item (playTopCardInDrawPile, :2555-2559) and Double Tap pushes a
+        //     `purgeOnUse && autoplay` item (queuePurgeCard, :2792-2801). Without at least one
+        //     of them, callEndTurnEarlySequence's `while` loop body is unreachable and both
+        //     halves of its `item.autoplay && !item.purgeOnUse` filter are blind spots.
+        //     Neither can conjure an unregistered card here (mayPlayHandCard's Havoc gate is
+        //     satisfied: the deck is all-registered and the Time Eater adds no status cards
+        //     below ascension 19), so the traces stay replayable.
+        //
+        // ⚠ Deck shape still obeys the two policy-derived rules from batch 37: everything
+        // costs 0-2 (pickAction spends energy strictly left to right, so 3-cost cards are
+        // near-dead), and upgradeAll is on (LIMIT_BREAK+ does not exhaust).
+        //
+        // ⚠⚠ FINGERPRINT COLLISION RULE: the deck contents differ from every other variant's,
+        // so the disjointness requirement is satisfied twice over (TIME_EATER is also named by
+        // no other variant, and JAW_WORM_HORDE is deliberately absent from this product).
+        const std::vector<MonsterEncounter> batch38Encounters {
+            MonsterEncounter::TIME_EATER,  // TIME_WARP + callEndTurnEarlySequence
+        };
+        std::vector<CardId> batch38Deck = BATCH_1;
+        for (CardId c : {CardId::SPOT_WEAKNESS, CardId::SPOT_WEAKNESS,
+                         CardId::SPOT_WEAKNESS, CardId::SPOT_WEAKNESS,
+                         CardId::LIMIT_BREAK, CardId::LIMIT_BREAK,
+                         CardId::SWORD_BOOMERANG, CardId::SWORD_BOOMERANG,
+                         CardId::GHOSTLY_ARMOR, CardId::GHOSTLY_ARMOR,
+                         CardId::GHOSTLY_ARMOR, CardId::GHOSTLY_ARMOR,
+                         CardId::GOOD_INSTINCTS, CardId::GOOD_INSTINCTS,
+                         CardId::IMPERVIOUS, CardId::IMPERVIOUS,
+                         CardId::IMPERVIOUS, CardId::IMPERVIOUS,
+                         CardId::REAPER, CardId::REAPER,
+                         CardId::FINESSE, CardId::FINESSE,
+                         CardId::FINESSE, CardId::FINESSE,
+                         CardId::FINESSE, CardId::FINESSE,
+                         CardId::FLASH_OF_STEEL, CardId::FLASH_OF_STEEL,
+                         CardId::FLASH_OF_STEEL, CardId::FLASH_OF_STEEL,
+                         CardId::FLASH_OF_STEEL, CardId::FLASH_OF_STEEL,
+                         CardId::HAVOC, CardId::HAVOC, CardId::HAVOC, CardId::HAVOC,
+                         CardId::DOUBLE_TAP, CardId::DOUBLE_TAP}) {
+            batch38Deck.push_back(c);
+        }
+        act3Variants.push_back({batch38Deck, 40, true, batch38Encounters});
     }
 
     for (const auto &v : variants) {
