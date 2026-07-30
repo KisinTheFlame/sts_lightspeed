@@ -1693,6 +1693,85 @@ int main() {
             MonsterEncounter::AUTOMATON,
         };
         act2Variants.push_back({batch24, seeds.size(), false, batch28Encounters});
+
+        // Variant 29: batch 29 of the engine repo — the last two act-2 bosses, which closes
+        // act 2 (19/19 encounters).
+        //
+        // Deck / seeds / ascension are variant 24..28's exactly (BATCH_1 + one SPOT_WEAKNESS,
+        // all 125 seeds, un-upgraded, ascension 0), APPENDED rather than folded into any
+        // existing variant's encounter list (traceIdx drives the relic/potion rotation).
+        // The Spot Weakness copy carries forward for the usual reason: it is the only reader of
+        // Monster::isAttacking() -> isMoveAttack (MonsterMoves.h:414-535). New moves this batch
+        // that ARE in the whitelist: TORCH_HEAD_TACKLE, THE_CHAMP_FACE_SLAP,
+        // THE_CHAMP_HEAVY_SLASH, THE_CHAMP_EXECUTE, THE_COLLECTOR_FIREBALL. New moves that are
+        // NOT: THE_CHAMP_DEFENSIVE_STANCE / _TAUNT / _GLOAT / _ANGER, THE_COLLECTOR_BUFF /
+        // _MEGA_DEBUFF / _SPAWN.
+        //
+        // ⚠ Decks 24..29 are byte-identical and split-traces.mjs / variant0-rows.mjs
+        //   fingerprint a variant by its DECK CONTENTS — safe only because the six encounter
+        //   lists are pairwise DISJOINT. Neither encounter here appears in an earlier variant.
+        //
+        // The two encounters:
+        //   COLLECTOR  The Collector (282 HP, boss tier asc>=9) in SLOT 2, with slots 0 AND 1
+        //              RESERVED EMPTY. MonsterGroup.cpp:198-201 is `monsterCount = 2;
+        //              createMonster(THE_COLLECTOR);` — a THIRD way of reserving slots, distinct
+        //              from the Gremlin Leader's (build 1/2/3, then hand-assign
+        //              monstersAlive = 3 / monsterCount = 4) and from the Automaton's
+        //              (`monsterCount = 1; createMonster(...); ++monsterCount`). Here the bare
+        //              assignment before createMonster is the whole trick: createMonster writes
+        //              arr[monsterCount], then does ++monsterCount and ++monstersAlive, so the
+        //              group ends up monsterCount = 3 / monstersAlive = 1 with the boss LAST.
+        //              Actions::SpawnTorchHeads (Actions.cpp:500-527) is the THIRD summon family
+        //              and shares no code with the other two:
+        //                * how many: `3 - bc.monsters.monstersAlive` — the ONLY place in the
+        //                  whole reference that reads monstersAlive to size a spawn, so it is
+        //                  also the oracle for "reserved empty slots must NOT count as alive";
+        //                * where: `spawnIdxs[2] {(arr[1].isDying() ? 1 : 0), 0}` — slot 1 first
+        //                  when it is free, then slot 0. Not a search over 1,2,0 (Gremlins) and
+        //                  not hardcoded 0/2 (Orbs);
+        //                * `torchHead = Monster()` full reset (Gremlins yes, Orbs no);
+        //                * initHp is called a SECOND time right after construct(), which already
+        //                  called it — the reference notes `// bug somewhere in game`. So each
+        //                  torch head burns TWO monsterHpRng calls and keeps the SECOND roll.
+        //                  This is NOT the hpDiscardRoll family (that discard lives inside
+        //                  initHp and always uses the low HP band);
+        //                * intent comes from `setMove(TORCH_HEAD_TACKLE)`, NOT rollMove — and
+        //                  TORCH_HEAD's getMoveForRoll falls through to `default` returning
+        //                  INVALID (MonsterSpecific.cpp:3364), so it is never rolled at all;
+        //                * the aiRng cost is paid at the END instead: `for (i < spawnCount)
+        //                  bc.noOpRollMove();` — one discarded random(99) PER SPAWNED HEAD;
+        //                * no ++monsterTurnIdx (the Collector is the LAST slot, so the new heads
+        //                  cannot act this turn anyway).
+        //              The Collector also carries MINION_LEADER (preBattleAction,
+        //              MonsterSpecific.cpp:272-274) — its THIRD host after the Gremlin Leader and
+        //              the Automaton — so killing it wins the fight outright even with torch
+        //              heads standing. TORCH_HEAD_TACKLE's takeTurn case is `attackPlayerHelper
+        //              (bc, 7);` and NOTHING ELSE: the fourth turn-end shape ("none"), so a torch
+        //              head tackles forever and never touches aiRng again.
+        //   CHAMP      The Champ (420 HP, boss tier asc>=9), single monster, seven moves. Its
+        //              PHASE 2 is a HP-THRESHOLD LATCH and it does NOT live in Monster::onHpLost
+        //              (that switch has no THE_CHAMP case at all — unlike the Guardian's mode
+        //              shift, which does). It is inside getMoveForRoll
+        //              (MonsterSpecific.cpp:2892-2945): `if (monsterData & 0x4) …` else
+        //              `if (curHp < maxHp/2) { monsterData |= 0x4; return ANGER; }`. So the
+        //              transition is only noticed on the NEXT roll after the fight drops it below
+        //              half, never at the instant of the hit. miscInfo does double duty here:
+        //              bits 0..1 are the DEFENSIVE_STANCE use count (capped at 2), bit 2 is the
+        //              phase-2 flag, and `++monsterData` on a stance is what increments the
+        //              count. ANGER also calls Monster::removeDebuffs() (Monster.cpp:522-535),
+        //              the first monster-side debuff wipe in the project — Bash / Thunderclap /
+        //              Fear Potion and Clothesline / Weak Potion make VULNERABLE and WEAK on the
+        //              boss reachable, so it has a real oracle. TAUNT is also the first monster
+        //              move that debuffs the player SYNCHRONOUSLY (`bc.player.debuff<PS::WEAK>
+        //              (2, true);`, not addToBot(Actions::DebuffPlayer)), and DEFENSIVE_STANCE's
+        //              two numbers use getTriIdx(asc, 9, 19) rather than the bossDiffIdx
+        //              (asc 4/19) that ANGER and GLOAT use — two different tier families on one
+        //              monster.
+        const std::vector<MonsterEncounter> batch29Encounters {
+            MonsterEncounter::CHAMP,
+            MonsterEncounter::COLLECTOR,
+        };
+        act2Variants.push_back({batch24, seeds.size(), false, batch29Encounters});
     }
 
     for (const auto &v : variants) {
