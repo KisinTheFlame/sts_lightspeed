@@ -1999,6 +1999,126 @@ int main() {
         tgtVariants.push_back({batch31Deck, 40, false, batch31Encounters, 0, 1});
     }
 
+    // ============================== ACT 3 (batch 32) ==========================
+    //
+    // A FOURTH (variants x encounters) product, emitted AFTER all three above.
+    //
+    // ⚠⚠ WHY A FOURTH PRODUCT AND NOT A VARIANT ON AN EXISTING ONE. traceIdx is captured by
+    // reference and the products run in declaration order, so appending a variant to
+    // `variants` / `act2Variants` / `tgtVariants` would shift every traceIdx handed out by
+    // the products AFTER it and invalidate their committed files wholesale. Appending a whole
+    // product only ever adds indices at the END. Same rule as batch 23 (act 2) and batch 31
+    // (target policy), one level further out.
+    //
+    // ⚠⚠ AND THE COROLLARY THAT BINDS EVERY ACT-3 BATCH: this product must stay LAST until
+    // act 3 is finished. Every act-3 batch appends one variant HERE, and a variant appended
+    // to a product that is not last shifts the indices of everything after it. So: no new
+    // product may be hung behind this one while act 3 is still being filled in.
+    //
+    // This list holds ALL FIFTEEN act-3 encounters that are NOT already installed
+    // (MonsterEncounterPool, MonsterEncounters.h:153-181 — act 3 is 3 weak + 8 strong +
+    // 3 elite + 3 boss = 17 slots, THREE_DARKLINGS appears in both the weak and the strong
+    // pool, and JAW_WORM_HORDE is already in act 1's frozen `encounters`). Listing them all
+    // up front is safe for the same reason act2Encounters lists all 19: an encounter a
+    // variant does not name is `continue`d BEFORE the seed loop and therefore consumes no
+    // traceIdx. Growing THIS list later is free; growing a VARIANT's list is not.
+    //
+    // ⚠ JAW_WORM_HORDE is deliberately absent. It is act 3's, but it has been in the act-1
+    // product since the first commit (`jaw_worm_horde.jsonl`, ENC_ALL policy) and naming it
+    // here as well would only be legal if some variant's deck+ascension+policy fingerprint
+    // differed from every act-1 variant's — not worth the trap. Act-3 variants must not name it.
+    //
+    // ⚠ Floors stay {1,3,7} and `gc.act` stays 1, exactly as for act 2. floorNum feeds only the
+    // `Random(seed + floorNum)` reseed on arrival. `gc.act` is read by exactly one thing in
+    // monster construction — MonsterGroup's `bc.act == 3` Jaw Worm strength buff — and the one
+    // encounter that would reach it (JAW_WORM_HORDE) is not in this product. Revisit this when
+    // an act-3 variant ever wants Jaw Worms.
+    const std::vector<std::pair<MonsterEncounter, const char *>> act3Encounters {
+        // weak pool
+        {MonsterEncounter::THREE_DARKLINGS,       "THREE_DARKLINGS"},
+        {MonsterEncounter::ORB_WALKER,            "ORB_WALKER"},
+        {MonsterEncounter::THREE_SHAPES,          "THREE_SHAPES"},
+        // strong pool (JAW_WORM_HORDE and THREE_DARKLINGS also live here)
+        {MonsterEncounter::SPIRE_GROWTH,          "SPIRE_GROWTH"},
+        {MonsterEncounter::TRANSIENT,             "TRANSIENT"},
+        {MonsterEncounter::FOUR_SHAPES,           "FOUR_SHAPES"},
+        {MonsterEncounter::MAW,                   "MAW"},
+        {MonsterEncounter::SPHERE_AND_TWO_SHAPES, "SPHERE_AND_TWO_SHAPES"},
+        {MonsterEncounter::WRITHING_MASS,         "WRITHING_MASS"},
+        // elites
+        {MonsterEncounter::GIANT_HEAD,            "GIANT_HEAD"},
+        {MonsterEncounter::NEMESIS,               "NEMESIS"},
+        {MonsterEncounter::REPTOMANCER,           "REPTOMANCER"},
+        // bosses
+        {MonsterEncounter::AWAKENED_ONE,          "AWAKENED_ONE"},
+        {MonsterEncounter::TIME_EATER,            "TIME_EATER"},
+        {MonsterEncounter::DONU_AND_DECA,         "DONU_AND_DECA"},
+    };
+
+    std::vector<DeckVariant> act3Variants;
+    {
+        // Variant 32: the first act-3 variant. Batch 32 of the engine repo.
+        //
+        // THE THREE "SHAPES" ENCOUNTERS. Act 3 opens with the cheapest structural step
+        // available: three encounters that between them introduce exactly three monsters
+        // (REPULSOR / EXPLODER / SPIKER) and no new turn-structure machinery. The heavy act-3
+        // mechanics — the Awakened One's half-death, Time Eater's TIME_WARP, Reptomancer's
+        // fourth summon family — each get their own batch, per the engine repo's "one
+        // mechanic per batch" rule.
+        //
+        // ⚠ THE TWO GROUPS ARE BUILT BY TWO DIFFERENT FUNCTIONS, which is the whole reason
+        // all three ship together:
+        //   THREE_SHAPES / FOUR_SHAPES  -> MonsterGroup::createShapes(bc, n)
+        //       (MonsterGroup.cpp:508-530) draws WITHOUT REPLACEMENT from a SIX-entry pool
+        //       {REPULSOR, REPULSOR, EXPLODER, EXPLODER, SPIKER, SPIKER}, shifting the tail
+        //       left after each pick — same family as GREMLIN_GANG's 8-choose-4, not the
+        //       same code.
+        //   SPHERE_AND_TWO_SHAPES       -> two calls to MonsterGroup::getAncientShape
+        //       (:532-539) which picks WITH REPLACEMENT from a THREE-entry table
+        //       {SPIKER, REPULSOR, EXPLODER} — different length, different order, no
+        //       duplicates. So that encounter really can field two of the same shape,
+        //       and THREE_SHAPES really cannot field three of a kind.
+        // Shipping only one of the two would leave the other transcription unbacked.
+        //
+        // ⚠ SPHERE_AND_TWO_SHAPES also re-uses SPHERIC_GUARDIAN (batch 23) in a NEW slot:
+        // it sits LAST (index 2) behind the two shapes, and it is an `hpNoRoll` monster, so
+        // that encounter burns exactly 2 miscRng + 2 monsterHpRng rolls at construction.
+        //
+        // WHY THE SAME DECK / SEEDS / ASCENSION AS THE ACT-2 VARIANTS.
+        //   * deck = BATCH_1 + one SPOT_WEAKNESS, byte-identical to variants 24..31, which
+        //     keeps Monster::isAttacking() -> isMoveAttack under an oracle for the three new
+        //     monsters. That matters more than usual here: EXPLODER_EXPLODE deals 30 damage
+        //     and is NOT in the isMoveAttack whitelist (it goes through Actions::DamagePlayer
+        //     rather than attackPlayerHelper), so the whitelist's most counter-intuitive
+        //     entry to date lands in this very batch.
+        //   * 40 seeds, matching variants 30/31. The three shapes have short, largely
+        //     deterministic intent chains (the Exploder's is fully scripted), so seed
+        //     diversity buys less here than the act-2 asc-0 variants' 125.
+        //   * ASCENSION 0 and TARGET POLICY 0 deliberately: none of the three monsters has
+        //     `ascCalibrated` set on the engine side yet (the Spiker's {3,4,7} Thorns tiers
+        //     have no oracle at either endpoint), and stacking axes in one batch makes "which
+        //     axis broke the data" undiagnosable.
+        //
+        // ⚠⚠ FINGERPRINT COLLISION RULE. split-traces.mjs fingerprints a variant by
+        // (deck contents + ascension + targetPolicy). This variant's fingerprint is
+        // IDENTICAL to variants 24..29's, so its encounter list MUST stay disjoint from
+        // theirs or the rows would land in one file and be treated as a single block. Act-3
+        // encounters are named by no act-2 variant, so that holds — and it keeps holding as
+        // long as act-3 batches only ever name act-3 encounters.
+        //
+        // ⚠ JAW_WORM_HORDE is act 3's too, but it has been in the act-1 product since the
+        // first commit; naming it here would collide by the rule just above. Act-3 variants
+        // must never name it.
+        const std::vector<MonsterEncounter> batch32Encounters {
+            MonsterEncounter::THREE_SHAPES,           // createShapes(bc, 3)
+            MonsterEncounter::FOUR_SHAPES,            // createShapes(bc, 4)
+            MonsterEncounter::SPHERE_AND_TWO_SHAPES,  // getAncientShape x2 + SPHERIC_GUARDIAN
+        };
+        std::vector<CardId> batch32Deck = BATCH_1;
+        batch32Deck.push_back(CardId::SPOT_WEAKNESS);
+        act3Variants.push_back({batch32Deck, 40, false, batch32Encounters});
+    }
+
     for (const auto &v : variants) {
         // 10 starter cards are added by the GameContext constructor.
         if (static_cast<int>(v.extra.size()) + 10 > Deck::MAX_SIZE) {
@@ -2018,6 +2138,13 @@ int main() {
         if (static_cast<int>(v.extra.size()) + 10 > Deck::MAX_SIZE) {
             std::cerr << "target-policy deck variant exceeds Deck::MAX_SIZE (" << Deck::MAX_SIZE
                       << "): " << (v.extra.size() + 10) << " cards" << std::endl;
+            return 1;
+        }
+    }
+    for (const auto &v : act3Variants) {
+        if (static_cast<int>(v.extra.size()) + 10 > Deck::MAX_SIZE) {
+            std::cerr << "act3 deck variant exceeds Deck::MAX_SIZE (" << Deck::MAX_SIZE << "): "
+                      << (v.extra.size() + 10) << " cards" << std::endl;
             return 1;
         }
     }
@@ -2245,11 +2372,18 @@ int main() {
     // past the end of the act-1 range, which is what keeps every committed act-1 file
     // byte-identical.
     emitProduct(act2Variants, act2Encounters);
-    // ⚠ MUST stay last, for the same reason one level further out. Note the corollary: from
-    // now on NOTHING may be appended to `variants` or `act2Variants` either — either would
-    // shift the traceIdx values this product hands out. New axes get their own product at the
-    // end; new act-1/act-2 variants are no longer free.
+    // ⚠ MUST stay ahead of the act-3 product only, and behind the two above it. Note the
+    // corollary: NOTHING may be appended to `variants` or `act2Variants` — either would shift
+    // the traceIdx values this product and the act-3 one hand out. New axes get their own
+    // product at the end; new act-1/act-2 variants are no longer free.
     emitProduct(tgtVariants, tgtEncounters);
+    // ⚠ MUST stay last, and must STAY last for as long as act 3 is being filled in: every
+    // act-3 batch appends one variant to `act3Variants`, and appending to a product that is
+    // not last shifts every traceIdx the products behind it hand out. So no fifth product
+    // until act 3 is done. Adding this call with `act3Variants` still empty is a no-op, and
+    // that was proved rather than assumed: tools/regen-traces.sh --check reproduced all 101
+    // committed files byte-for-byte before the first act-3 variant was filled in.
+    emitProduct(act3Variants, act3Encounters);
 
     std::cout << "]}" << std::endl;
     return 0;
