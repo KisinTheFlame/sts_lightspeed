@@ -2767,6 +2767,129 @@ int main() {
 
     std::vector<DeckVariant> relicVariants;
     {
+        // The deck is the act-2/act-3 standard, VERBATIM: BATCH_1 + SPOT_WEAKNESS, 22 cards,
+        // un-upgraded. That is deliberate — this batch's question is "does the reference react
+        // to a relic", not "can the player get through the fight", and every encounter named
+        // below already has a committed file proving its moves execute under exactly this deck
+        // (variants 23..29 for act 2, 32..36 for act 3, variant 0 for act 1).
+        //
+        // ⚠ Philosopher's Stone does change the fight — initRelics gives it `energyPerTurn++`
+        // — so the traces are NOT a re-run of the existing files with a relic bolted on. That
+        // is fine and expected; what matters is that the same encounters were already known to
+        // reach the code being tested with a WEAKER player.
+        std::vector<CardId> relicDeck = BATCH_1;
+        relicDeck.push_back(CardId::SPOT_WEAKNESS);
+
+        // ---- relic set 1: Philosopher's Stone + Gremlin Horn + Hand Drill ----------------
+        //
+        // THREE RELICS AT ONCE, because relics stack and each one wants a different situation.
+        // `gc.relics.add` is a bare `std::vector::push_back` + a bit set (Game.cpp:14-17) —
+        // no cap, no side effect — and none of these three is an `atBattleStart` relic, so the
+        // fixed_list<RelicId,8> in initRelics is untouched.
+        //
+        //   PHILOSOPHERS_STONE — BattleContext.cpp:198-204 (initRelics: EVERY slot up to
+        //     monsterCount gets buff<STRENGTH>(1), and energyPerTurn++), plus SEVEN more call
+        //     sites that buff monsters which appear LATER. The encounter list below is exactly
+        //     "one host per call site":
+        //       largeSlimeSplit     :3406  -> LARGE_SLIME  (and SLIME_BOSS's children re-split)
+        //       slimeBossSplit      :3433  -> SLIME_BOSS
+        //       SummonGremlins Actions.cpp:488 -> GREMLIN_LEADER
+        //       spawnBronzeOrbs     :3454  -> AUTOMATON
+        //       SpawnTorchHeads Actions.cpp:517 -> COLLECTOR
+        //       reptomancerSummon   :3601  -> REPTOMANCER
+        //       DARKLING_REINCARNATE:1494  -> THREE_DARKLINGS
+        //     ⚠⚠ The initRelics loop has NO isTargetable()/isAlive() filter, so the
+        //     RESERVED-BUT-NEVER-CONSTRUCTED slots get Strength too (Gremlin Leader's slot 0,
+        //     the Automaton's 0/2, the Collector's 0/1, Reptomancer's 0/3) and it shows up in
+        //     the snapshot on an `"id":"INVALID = 0"` row. Four of the eight encounters below
+        //     have such a slot on purpose. (The relic one line above, BRIMSTONE, DOES filter —
+        //     they are two cases of the same switch.)
+        //
+        //   GREMLIN_HORN — Monster.cpp:317-320, two separate addToBot (GainEnergy(1), then
+        //     DrawCards(1)) at the very END of Monster::die, i.e. AFTER the victory `return`.
+        //     It therefore needs a monster to die WHILE A COMPANION LIVES — the same constraint
+        //     as Spore Cloud (batch 16). Every encounter below except SPHERIC_GUARDIAN is
+        //     multi-monster, or becomes multi-monster by splitting/summoning.
+        //
+        //   HAND_DRILL — Monster.cpp:433-435 and :488-490, the SAME three lines on both damage
+        //     paths. Needs a monster that HAS block and has it chipped to exactly 0. Two hosts
+        //     here: SPHERIC_GUARDIAN (Barricade, so its block accumulates and is the only thing
+        //     in the corpus that reliably sits above zero) and GREMLIN_LEADER (Shield Gremlin's
+        //     PROTECT hands block to a random ally). ⚠ The gate is cumulative, not "one hit
+        //     bigger than the block" — each hit takes min(block, damage) off, so the hit that
+        //     brings it to 0 is the one that fires.
+        const std::vector<MonsterEncounter> relicSet1Encounters {
+            MonsterEncounter::LARGE_SLIME,      // largeSlimeSplit
+            MonsterEncounter::SLIME_BOSS,       // slimeBossSplit (+ its children re-split)
+            MonsterEncounter::SPHERIC_GUARDIAN, // Barricade block -> Hand Drill
+            MonsterEncounter::GREMLIN_LEADER,   // SummonGremlins + Shield Gremlin block
+            MonsterEncounter::AUTOMATON,        // spawnBronzeOrbs
+            MonsterEncounter::COLLECTOR,        // SpawnTorchHeads
+            MonsterEncounter::THREE_DARKLINGS,  // DARKLING_REINCARNATE
+            MonsterEncounter::REPTOMANCER,      // reptomancerSummon
+        };
+        relicVariants.push_back({relicDeck, 40, false, relicSet1Encounters, 0, 0,
+                                 {{RelicId::PHILOSOPHERS_STONE, "philosophers_stone"},
+                                  {RelicId::GREMLIN_HORN,       "gremlin_horn"},
+                                  {RelicId::HAND_DRILL,         "hand_drill"}},
+                                 {}, 1});
+
+        // ---- relic sets 2 and 3: the Omamori A/B pair -------------------------------------
+        //
+        // WRITHING_MASS_IMPLANT (MonsterSpecific.cpp:1539-1548) is the reference's only reader
+        // of either relic:
+        //     miscInfo = true;
+        //     if (!bc.player.hasRelic<R::OMAMORI>()) {
+        //         if (bc.player.hasRelic<R::DARKSTONE_PERIAPT>()) { bc.player.increaseMaxHp(6); }
+        //     }
+        // The committed writhing_mass.jsonl already pins the "neither relic" side (the whole
+        // branch is a no-op there). These two variants pin the other two corners:
+        //
+        //   set 2 = Darkstone Periapt (+ Hand Drill)          -> maxHp/curHp both +6 on implant
+        //   set 3 = set 2 PLUS Omamori                        -> nothing happens
+        //
+        // ⚠⚠ SET 3 IS SET 2 PLUS EXACTLY ONE RELIC, and the potions are PINNED to the same
+        // value in both, so the two files are identical inputs apart from Omamori. That makes
+        // the evidence a direct diff rather than a mutation: any line that differs between
+        // writhing_mass@relic2 and writhing_mass@relic3 is a line where the Omamori gate
+        // changed the outcome. Without pinning, the rotation would hand the two variants
+        // DIFFERENT potions (their traceIdx values differ) and the comparison would be worthless.
+        //
+        // ⚠⚠ OMAMORI NEEDS data >= 1. initRelics' case for it is
+        // `p.setHasRelic<R::OMAMORI>(r.data)` (BattleContext.cpp:185-186) — it OVERWRITES the
+        // bit copied from the run-level container, so an Omamori added with data 0 is invisible
+        // to `player.hasRelic<>()` and set 3 would be a byte-for-byte copy of set 2. 2 is the
+        // number of charges the real game hands out. (LIZARD_TAIL is the only other relic with
+        // this shape.)
+        //
+        // ⚠ Hand Drill rides along in both because Writhing Mass gives ITSELF 16/18 block with
+        // WRITHING_MASS_FLAIL and the policy attacks it directly — the cheapest second host for
+        // the block-broken gate, at zero extra files.
+        const std::vector<MonsterEncounter> writhingMassOnly {
+            MonsterEncounter::WRITHING_MASS,
+        };
+        const std::vector<Potion> pinnedPotions { Potion::BLOCK_POTION };
+        relicVariants.push_back({relicDeck, 40, false, writhingMassOnly, 0, 0,
+                                 {{RelicId::DARKSTONE_PERIAPT, "darkstone_periapt"},
+                                  {RelicId::HAND_DRILL,        "hand_drill"}},
+                                 pinnedPotions, 2});
+        relicVariants.push_back({relicDeck, 40, false, writhingMassOnly, 0, 0,
+                                 {{RelicId::DARKSTONE_PERIAPT, "darkstone_periapt"},
+                                  {RelicId::HAND_DRILL,        "hand_drill"},
+                                  {RelicId::OMAMORI,           "omamori", 2}},
+                                 pinnedPotions, 3});
+
+        // ⚠⚠ NOT REGISTERED, and the reason is NOT "it was not in the rotation": THE_SPECIMEN.
+        // Monster::die ends with
+        //     if (bc.player.hasRelic<RelicId::THE_SPECIMEN>()) {
+        //         bc.addToBot( Actions::SetState(InputState::SELECT_ENEMY_THE_SPECIMEN_APPLY_POISON) );
+        //     }
+        // and that InputState appears exactly TWICE in the whole reference: this write and its
+        // declaration in InputState.h:48. Nothing validates, enumerates or answers it, while
+        // BattleContext::executeActions leaves its loop the moment inputState stops being
+        // EXECUTING_ACTIONS (BattleContext.cpp:756-758). Handing this relic to a variant would
+        // wedge every battle at the first monster death and truncate the traces. It belongs
+        // with the cards the reference never implemented (SEEK et al): no oracle exists.
     }
 
     for (const auto &v : variants) {
