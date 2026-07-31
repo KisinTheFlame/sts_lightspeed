@@ -269,7 +269,15 @@ struct Step { std::string type; int idx; int target; std::vector<int> idxs; };
 // First batch of combat relics sts-combat has registered. Rotated per trace so the
 // data covers both initRelics passes (immediate stat buffs, and the queued
 // atBattleStart effects that land after the opening draw).
-struct RelicSpec { RelicId id; const char *name; };
+//
+// `data` is RelicInstance::data, the per-relic counter the run layer keeps. It is 0 for
+// every rotation entry (none of them reads it), but it is NOT cosmetic in general:
+// BattleContext::initRelics reads it for a handful of relics, and for two of them
+// (OMAMORI, LIZARD_TAIL) it writes `p.setHasRelic<X>(r.data)` — i.e. a relic added with
+// data 0 is INVISIBLE to `player.hasRelic<>()` inside combat. Batch 40 needs Omamori's
+// gate to be TRUE, so the field exists and defaults to 0 (which keeps every existing
+// `{RelicId::X, "name"}` initialiser valid and every committed line byte-identical).
+struct RelicSpec { RelicId id; const char *name; int data = 0; };
 static const std::vector<RelicSpec> RELIC_ROTATION {
     {RelicId::VAJRA,               "vajra"},
     {RelicId::ANCHOR,              "anchor"},
@@ -586,6 +594,48 @@ int main() {
         // ascension is: it has to be constant for a whole file, because the file is what
         // the engine repo's tools freeze and compare.
         int targetPolicy = 0;
+
+        // ---- explicit relic / potion loadout (batch 40) ---------------------------------
+        //
+        // EMPTY MEANS "use the rotation", so every variant declared before these fields
+        // existed keeps emitting byte-identical traces — the same trick as `ascension`,
+        // `targetPolicy`, `playerHp`, `deckUpgraded` and `halfDead`.
+        //
+        // ⚠⚠ WHY NOT JUST GROW `RELIC_ROTATION`. Both rotations index with the GLOBAL trace
+        // counter modulo the table's own length:
+        //     RELIC_ROTATION[(traceIdx*2 + k) % RELIC_ROTATION.size()]
+        //     POTION_ROTATION[(traceIdx*3 + i) % POTION_ROTATION.size()]
+        // so THE LENGTH IS THE MODULUS. Appending a 9th relic was measured, not reasoned
+        // about: tools/regen-traces.sh --check then reported 116 / 116 files CHANGED, with
+        // the very first line of the very first file already different (traceIdx 4 is the
+        // first index where % 8 and % 9 disagree). Replacing an entry in place is no safer:
+        // the modulus is unchanged but every trace that lands on that slot swaps relics.
+        //
+        // ⚠ The intuition "appending to the end of a list is free" is TRUE for the encounter
+        // lists (a variant that does not name an encounter `continue`s BEFORE the seed loop
+        // and therefore burns no traceIdx) and FALSE for these two tables. Do not mix them
+        // up. RELIC_ROTATION and POTION_ROTATION are FROZEN from here on, at the same level
+        // as act 1's `encounters` list and variant 0.
+        //
+        // A per-variant loadout is also simply more useful than a rotation: a relic batch
+        // wants "this variant carries exactly Philosopher's Stone + Gremlin Horn + Hand
+        // Drill", not "whatever the counter happened to deal out".
+        std::vector<RelicSpec> relics;
+        std::vector<Potion> potions;
+        // Identifies the loadout in the FILE NAME (`<encounter>@relic<N>.jsonl`), emitted
+        // into the trace header only when non-zero.
+        //
+        // ⚠⚠ THIS IS NOT COSMETIC. split-traces.mjs / variant0-rows.mjs fingerprint a
+        // variant by (deck contents + upgrade bits + ascension + targetPolicy). Two variants
+        // with the SAME deck and DIFFERENT relics would therefore collide: their rows would
+        // be dropped into one file and treated as a single block, and variant0-rows.mjs
+        // would silently report a LONGER frozen prefix. Adding relicSet to both the
+        // fingerprint and the group key removes the collision by construction.
+        //
+        // ⚠ Give every explicit-loadout variant its OWN number. Sharing a number is only
+        // safe under the usual rule (identical deck ⇒ disjoint encounter lists), and there
+        // is no reason to take that risk here.
+        int relicSet = 0;
     };
 
     // Batch 1 (already registered, verified by the committed variant-0 traces).
@@ -2691,6 +2741,34 @@ int main() {
         act3Variants.push_back({batch38Deck, 40, true, batch39Encounters});
     }
 
+    // ---- product 5: the relic / potion line (batch 40) ---------------------------------
+    //
+    // A FIFTH PRODUCT, appended after act 3. That became possible only when batch 39 filled
+    // act 3 in: while act 3 was still growing, `act3Variants` had to stay LAST (appending to
+    // a product that is not last shifts every traceIdx the products behind it hand out).
+    // `act3Variants` no longer grows, so the relic line hangs off its end.
+    //
+    // ⚠ The rule itself has not changed, only which product it names: new work always goes
+    // into a product appended AFTER the current last one, never into an earlier product's
+    // variant list.
+    //
+    // Why a new product rather than more act-3 variants: the relic line needs encounters
+    // from ALL THREE ACTS in one place (LARGE_SLIME / SLIME_BOSS in act 1, GREMLIN_LEADER /
+    // AUTOMATON / COLLECTOR in act 2, REPTOMANCER / THREE_DARKLINGS / WRITHING_MASS in act 3
+    // — the reference's seven Philosopher's Stone call sites are spread across exactly those),
+    // and a product is bound to one encounter list.
+    //
+    // Listing all 54 encounters up front is free for the same reason act2Encounters lists
+    // all 19: an encounter no variant names is `continue`d before the seed loop and burns no
+    // traceIdx.
+    std::vector<std::pair<MonsterEncounter, const char *>> relicEncounters = encounters;
+    relicEncounters.insert(relicEncounters.end(), act2Encounters.begin(), act2Encounters.end());
+    relicEncounters.insert(relicEncounters.end(), act3Encounters.begin(), act3Encounters.end());
+
+    std::vector<DeckVariant> relicVariants;
+    {
+    }
+
     for (const auto &v : variants) {
         // 10 starter cards are added by the GameContext constructor.
         if (static_cast<int>(v.extra.size()) + 10 > Deck::MAX_SIZE) {
@@ -2717,6 +2795,40 @@ int main() {
         if (static_cast<int>(v.extra.size()) + 10 > Deck::MAX_SIZE) {
             std::cerr << "act3 deck variant exceeds Deck::MAX_SIZE (" << Deck::MAX_SIZE << "): "
                       << (v.extra.size() + 10) << " cards" << std::endl;
+            return 1;
+        }
+    }
+    for (const auto &v : relicVariants) {
+        if (static_cast<int>(v.extra.size()) + 10 > Deck::MAX_SIZE) {
+            std::cerr << "relic deck variant exceeds Deck::MAX_SIZE (" << Deck::MAX_SIZE << "): "
+                      << (v.extra.size() + 10) << " cards" << std::endl;
+            return 1;
+        }
+        // atBattleStart in BattleContext::initRelics is a fixed_list<RelicId, 8> and
+        // fixed_list has NO bounds checking anywhere in the reference, so overfilling it is
+        // silent memory corruption rather than an assert. None of batch 40's relics is an
+        // atBattleStart one, but an explicit loadout is exactly the place a future batch
+        // could hand out nine of them by accident.
+        if (v.relics.size() > 8) {
+            std::cerr << "relic variant names more than 8 relics (initRelics' atBattleStart "
+                         "fixed_list holds 8): " << v.relics.size() << std::endl;
+            return 1;
+        }
+        if (v.relicSet == 0) {
+            std::cerr << "relic variant must carry a non-zero relicSet (it is the file-name "
+                         "suffix AND the fingerprint dimension)" << std::endl;
+            return 1;
+        }
+    }
+    {
+        // Every explicit-loadout variant must own its relicSet number: two variants sharing
+        // one would share a group key, so their rows would land in one file and
+        // variant0-rows.mjs would report a longer frozen prefix than the data actually has.
+        std::vector<int> sets;
+        for (const auto &v : relicVariants) sets.push_back(v.relicSet);
+        std::sort(sets.begin(), sets.end());
+        if (std::adjacent_find(sets.begin(), sets.end()) != sets.end()) {
+            std::cerr << "two relic variants share a relicSet number" << std::endl;
             return 1;
         }
     }
@@ -2763,12 +2875,23 @@ int main() {
                 // the GameContext constructor left behind.
                 gc.potionRng = Random(sd.value);
 
-                // Two relics per trace, rotating, so every trace exercises a pair.
+                // Two relics per trace, rotating, so every trace exercises a pair — unless
+                // the variant names its own loadout, in which case it gets exactly that.
+                // ⚠ `traceIdx` is advanced identically either way (see `++traceIdx` below),
+                // which is what keeps the rotation's assignment to every OTHER variant
+                // unchanged.
                 std::vector<std::string> relicNames;
-                for (int k = 0; k < 2; ++k) {
-                    const auto &rs = RELIC_ROTATION[(traceIdx * 2 + static_cast<size_t>(k)) % RELIC_ROTATION.size()];
-                    gc.relics.add({rs.id, 0});
-                    relicNames.push_back(rs.name);
+                if (variant.relics.empty()) {
+                    for (int k = 0; k < 2; ++k) {
+                        const auto &rs = RELIC_ROTATION[(traceIdx * 2 + static_cast<size_t>(k)) % RELIC_ROTATION.size()];
+                        gc.relics.add({rs.id, rs.data});
+                        relicNames.push_back(rs.name);
+                    }
+                } else {
+                    for (const auto &rs : variant.relics) {
+                        gc.relics.add({rs.id, rs.data});
+                        relicNames.push_back(rs.name);
+                    }
                 }
 
                 // Richer deck so the traces exercise the newly registered cards, not just
@@ -2812,8 +2935,14 @@ int main() {
                 // Hand out three potions, rotating through the set so different traces
                 // exercise different effects (including Entropic Brew's potionRng draws).
                 for (int i = 0; i < bc.potionCapacity; ++i) {
-                    const size_t k = (traceIdx * 3 + static_cast<size_t>(i)) % POTION_ROTATION.size();
-                    bc.potions[i] = POTION_ROTATION[k];
+                    if (variant.potions.empty()) {
+                        const size_t k = (traceIdx * 3 + static_cast<size_t>(i)) % POTION_ROTATION.size();
+                        bc.potions[i] = POTION_ROTATION[k];
+                    } else {
+                        // Cycles when the variant names fewer potions than the capacity, so a
+                        // one-element list means "all three slots hold this".
+                        bc.potions[i] = variant.potions[static_cast<size_t>(i) % variant.potions.size()];
+                    }
                     ++bc.potionCount;
                 }
                 ++traceIdx;
@@ -2844,6 +2973,20 @@ int main() {
                 // reader can tell which policy produced a line.
                 if (variant.targetPolicy != 0) {
                     std::cout << "," << q("targetPolicy") << ":" << variant.targetPolicy;
+                }
+                // Same trick a third time, for the explicit relic/potion loadout axis
+                // (batch 40). Emitted only when non-zero, so every line generated under the
+                // rotation stays byte-identical — which is what lets
+                // tools/regen-traces.sh --check prove this axis is a no-op for the existing
+                // corpus BEFORE any new variant is added.
+                //
+                // ⚠ The replayer does NOT need to read it: the actual relics are already
+                // listed verbatim in `relics` and the potions in every snapshot. It exists so
+                // split-traces.mjs can give these traces their own files, and so that the
+                // variant fingerprint has a dimension that distinguishes two loadouts sharing
+                // one deck.
+                if (variant.relicSet != 0) {
+                    std::cout << "," << q("relicSet") << ":" << variant.relicSet;
                 }
                 // Player HP *entering* the fight, i.e. gc.curHp BEFORE BattleContext::init.
                 //
@@ -2956,6 +3099,12 @@ int main() {
     // that was proved rather than assumed: tools/regen-traces.sh --check reproduced all 101
     // committed files byte-for-byte before the first act-3 variant was filled in.
     emitProduct(act3Variants, act3Encounters);
+    // ⚠ MUST stay last from here on: batch 40 opened this product and the relic / potion line
+    // appends a variant to it every batch. Adding this call with `relicVariants` still empty
+    // is a no-op, and that was proved rather than assumed — tools/regen-traces.sh --check
+    // reproduced all 116 committed files byte-for-byte before the first relic variant was
+    // filled in.
+    emitProduct(relicVariants, relicEncounters);
 
     std::cout << "]}" << std::endl;
     return 0;
