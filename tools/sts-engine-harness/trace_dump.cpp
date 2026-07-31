@@ -2879,6 +2879,78 @@ int main() {
                                   {RelicId::OMAMORI,           "omamori", 2}},
                                  pinnedPotions, 3});
 
+        // ---- relic set 4 (batch 41): Brimstone + the four in-turn-counter relics ---------
+        //
+        // Two unrelated things ride in one variant because relics stack for free
+        // (RelicContainer::add is push_back + a bit, Game.cpp:14-17) and NONE of these five
+        // is an atBattleStart relic, so initRelics' fixed_list<RelicId,8> is untouched.
+        //
+        //   BRIMSTONE — the DELIBERATE COUNTERPART to batch 40's Philosopher's Stone. Both
+        //     relics run the same shaped loop over `monsters.arr[i]` for `i < monsterCount`,
+        //     in the SAME switch, and only one of them filters:
+        //         BattleContext.cpp:126-134  BRIMSTONE           `if (m.isTargetable())`
+        //         BattleContext.cpp:198-204  PHILOSOPHERS_STONE  no filter at all
+        //     Batch 40 pinned the unfiltered side (adding an alive filter to the Stone reddens
+        //     480 traces). This variant pins the OTHER side, so the encounter list below is
+        //     exactly the four encounters that RESERVE A SLOT THAT IS NEVER CONSTRUCTED —
+        //     the only place in the corpus where "filter" and "no filter" differ at all:
+        //         GREMLIN_LEADER  slot 0
+        //         AUTOMATON       slots 0 and 2
+        //         COLLECTOR       slots 0 and 1
+        //         REPTOMANCER     slots 0 and 3
+        //     ⚠ BRIMSTONE HAS A SECOND CALL SITE, and it is the one the real game's card text
+        //     describes: Player::applyStartOfTurnRelics (Player.cpp:498-505) repeats the exact
+        //     same body at the start of EVERY player turn. initRelics covers turn 1, the
+        //     start-of-turn hook covers turns 2+. Both are needed; either alone is wrong.
+        //
+        //   KUNAI (:1702) / ORNAMENTAL_FAN (:1714) / SHURIKEN (:1718) — three separate `if`s
+        //     in onUseAttackCard, all reading `p.attacksPlayedThisTurn % 3 == 0`, with other
+        //     relics interleaved between them (ORANGE_PELLETS sits between KUNAI and the FAN).
+        //     LETTER_OPENER (:1828) is the skill-side twin and reads p.skillsPlayedThisTurn.
+        //     ⚠ Both counters are incremented at the TOP of their handler (:1643 / :1769),
+        //     BEFORE any reader, so the first attack of a turn reads 1 rather than 0. Reversing
+        //     that order would make `% 3 == 0` fire on the turn's first card.
+        //
+        // ⚠⚠ THE DECK IS NOT THE ACT-2/3 STANDARD, AND THAT WAS MEASURED, NOT GUESSED.
+        // LETTER_OPENER needs THREE SKILLS IN ONE TURN, which is a different gate from "three
+        // attacks in one turn" — a batch-38 style measurement had to be run for each. Three
+        // candidate decks, same five relics, same four encounters, 480 traces each:
+        //
+        //   deck                                        avg turns  attack-gate  skill-gate
+        //   BATCH_1 + SPOT_WEAKNESS (22)                    6.64     969 / 449   59 /  56
+        //   + 4 FLEX + 4 GOOD_INSTINCTS + 4 FINESSE (34)    7.17     722 / 418 1966 / 479
+        //   the same 34 WITHOUT Brimstone                   9.54    1075 / 440 2628 / 479
+        //                                                            (fires / traces reached)
+        //
+        // The 22-card deck does reach the skill gate (59 is not 0), but only in 56 of 480
+        // traces; twelve 0-cost, non-exhausting skills raise it 33x at the cost of ~25% of the
+        // attack gate. The third row is not a candidate — it only shows WHY the fights are
+        // shorter here than in the @relic1 files: Brimstone hands the PLAYER +2 Strength every
+        // turn, so the player kills faster and there are fewer turns, not more.
+        // ⚠ Everything added costs 0 (pickAction spends energy strictly left to right, so a
+        // 1-cost skill competes with the attacks) and NONE of the three exhausts, so they come
+        // back every shuffle.
+        const std::vector<MonsterEncounter> reservedSlotEncounters {
+            MonsterEncounter::GREMLIN_LEADER,   // reserved slot 0
+            MonsterEncounter::AUTOMATON,        // reserved slots 0, 2
+            MonsterEncounter::COLLECTOR,        // reserved slots 0, 1
+            MonsterEncounter::REPTOMANCER,      // reserved slots 0, 3
+        };
+        std::vector<CardId> batch41Deck = relicDeck;
+        for (CardId c : {CardId::FLEX, CardId::FLEX, CardId::FLEX, CardId::FLEX,
+                         CardId::GOOD_INSTINCTS, CardId::GOOD_INSTINCTS,
+                         CardId::GOOD_INSTINCTS, CardId::GOOD_INSTINCTS,
+                         CardId::FINESSE, CardId::FINESSE, CardId::FINESSE, CardId::FINESSE}) {
+            batch41Deck.push_back(c);
+        }
+        relicVariants.push_back({batch41Deck, 40, false, reservedSlotEncounters, 0, 0,
+                                 {{RelicId::BRIMSTONE,      "brimstone"},
+                                  {RelicId::KUNAI,          "kunai"},
+                                  {RelicId::ORNAMENTAL_FAN, "ornamental_fan"},
+                                  {RelicId::SHURIKEN,       "shuriken"},
+                                  {RelicId::LETTER_OPENER,  "letter_opener"}},
+                                 {}, 4});
+
         // ⚠⚠ NOT REGISTERED, and the reason is NOT "it was not in the rotation": THE_SPECIMEN.
         // Monster::die ends with
         //     if (bc.player.hasRelic<RelicId::THE_SPECIMEN>()) {
