@@ -2951,6 +2951,145 @@ int main() {
                                   {RelicId::LETTER_OPENER,  "letter_opener"}},
                                  {}, 4});
 
+        // ---- relic set 5 (batch 42): Hand Drill + Bronze Scales, potions PINNED -----------
+        //
+        // ONE JOB: close batch 40's "Hand Drill on the Monster::damage path = 0 traces" blind
+        // spot. The relic's three lines are duplicated VERBATIM on both damage paths
+        // (Monster.cpp:433-435 attacked, :488-490 damage), and @relic1 could only reach the
+        // first one because nothing in that loadout deals NON-ATTACK damage.
+        //
+        // BRONZE_SCALES is the cheapest producer of non-attack damage: Thorns is
+        // `addToTop(Actions::DamageEnemy(enemyIdx, thorns))` from Player::attacked
+        // (Player.cpp:227-229) and DamageEnemy calls Monster::damage (Actions.cpp:63-71).
+        //
+        // ⚠⚠ THE ENCOUNTER LIST WAS MEASURED, NOT GUESSED, AND THE GATE IS TWO GATES.
+        // Thorns fires DURING THE MONSTER PHASE (it is a reaction to being attacked), and
+        // MonsterGroup::applyPreTurnLogic zeroes every non-Barricade monster's block at the
+        // START of that phase (Monster.cpp:19-21). So a monster only has block while thorns
+        // is hitting it if it has BARRICADE, or if an ALLY that acts earlier in the same
+        // phase handed it some. Then, separately, 3 damage has to bring that block to
+        // EXACTLY 0 (`hadBlock && block == 0`). Instrumented run over ten candidates,
+        // 120 traces each, Hand Drill + Bronze Scales, potions pinned so the only
+        // Monster::damage caller is Thorns:
+        //
+        //   encounter              thorns hits  gate A (had block)  gate B (broke it)  traces
+        //   SPHERIC_GUARDIAN            535            426                  27           25
+        //   GREMLIN_LEADER             1373             94                  27           23
+        //   SENTRY_AND_SPHERE           973            797                  21           21
+        //   DONU_AND_DECA              1005            477                   0            0
+        //   CENTURION_AND_HEALER        629             36                   0            0
+        //   AUTOMATON                   899             30                   0            0
+        //   CHAMP / JAW_WORM_HORDE / LAGAVULIN / WRITHING_MASS: gate A is 0
+        //
+        // Only three encounters clear BOTH gates, and they are the three below.
+        //   * SPHERIC_GUARDIAN / SENTRY_AND_SPHERE — Barricade + 40 block at preBattleAction
+        //     (MonsterSpecific.cpp:253-258), so its block survives into its own turn and the
+        //     player grinds it down through the 1..3 window.
+        //   * GREMLIN_LEADER — GREMLIN_LEADER_ENCOURAGE hands every minion 6 block
+        //     synchronously (:715-724) and the leader is arr[3], i.e. acts AFTER them... but
+        //     SHIELD_GREMLIN_PROTECT (arr[0..2]) hands an ally block mid-phase, and that ally
+        //     may still be to act. Both gates measured non-zero, so it stays.
+        // ⚠ DONU_AND_DECA has the FATTEST gate A (477) and still zero gate B: Deca's Square
+        //   of Protection hands 16 block, and 3-per-hit never lands on 0 before the phase ends.
+        //   "Has block" and "thorns finishes the block" really are two separate gates.
+        //
+        // ⚠⚠ POTIONS ARE PINNED TO BLOCK_POTION ON PURPOSE, and it is not cosmetic. The
+        // rotation hands out Fire/Explosive potions, which ALSO call Monster::damage, and
+        // pickAction drinks all three on turn 1 — that is enough to break e.g. sleeping
+        // Lagavulin's 8 starting block and light this same gate for a reason that has nothing
+        // to do with Thorns. Pinning a potion that never touches a monster makes the claim
+        // "every Monster::damage block-break in these three files is Thorns" true BY
+        // CONSTRUCTION. It has a second, free benefit: with both relics AND potions pinned,
+        // nothing in this variant reads traceIdx, so its traces are identical no matter where
+        // in the product order it sits — the measured numbers above carry over exactly.
+        const std::vector<MonsterEncounter> thornsBlockEncounters {
+            MonsterEncounter::SPHERIC_GUARDIAN,
+            MonsterEncounter::SENTRY_AND_SPHERE,
+            MonsterEncounter::GREMLIN_LEADER,
+        };
+        relicVariants.push_back({relicDeck, 40, false, thornsBlockEncounters, 0, 0,
+                                 {{RelicId::HAND_DRILL,    "hand_drill"},
+                                  {RelicId::BRONZE_SCALES, "bronze_scales"}},
+                                 pinnedPotions, 5});
+
+        // ---- relic set 6 (batch 42): Ink Bottle + Orange Pellets + the three counters -----
+        //
+        //   INK_BOTTLE — FOUR handlers, one per card type, with the SAME five lines each:
+        //       onUseAttackCard        BattleContext.cpp:1694
+        //       onUseSkillCard                        :1811
+        //       onUsePowerCard                        :1889
+        //       onUseStatusOrCurseCard                :1958   <- and this one is LAST in its
+        //     function, after the Blue Candle / Medical Kit branch, and has NO Orange Pellets
+        //     beside it. Plus initRelics :164 (`p.inkBottleCounter = r.data`).
+        //
+        //   ORANGE_PELLETS — THREE handlers (:1706 / :1819 / :1897) that only SET a bit in
+        //     `orangePelletsCardTypesPlayed`, plus a FOURTH site that is a different thing
+        //     entirely: Player::applyStartOfTurnRelics' `orangePelletsCardTypesPlayed.reset()`
+        //     (Player.cpp:559), the LAST statement of that function.
+        //
+        // Both relics are here because they are the two that sit BETWEEN Kunai / Ornamental
+        // Fan / Shuriken in onUseAttackCard, which batch 41 recorded as the closing condition
+        // for its "relative order of the three counter relics" blind spot.
+        //
+        // ⚠⚠ THAT PREDICTION IS WRONG AND THIS VARIANT IS WHAT MEASURED IT. Reordering the
+        // three only becomes observable if something between them READS strength/dexterity,
+        // and the only such line in Player::removeDebuffs is the `if (< 0) set 0` clamp. Two
+        // gates, both measured on the deck below (five encounters, 120 traces each):
+        //   * Orange Pellets' `.all()` and `attacksPlayedThisTurn % 3 == 0` must fire on the
+        //     SAME card. `.all()` needs Attack+Skill+Power since the last reset, so this needs
+        //     roughly 3 attacks AND 3 skills AND 3 powers in one turn: measured 0..3 per
+        //     encounter (11 in 1440 traces on the most 0-cost-heavy deck tried).
+        //   * At that instant strength or dexterity must be NEGATIVE. The only registered
+        //     source is LAGAVULIN_SIPHON_SOUL (-1/-1, MonsterSpecific.cpp:882-883), and the
+        //     first Pellets fire after it clamps both back to 0. Measured 0 EVERYWHERE.
+        // So that blind spot stays open; see TODOS. What this variant DOES close is a
+        // neighbouring one nobody had written down: INK BOTTLE vs ORANGE PELLETS. Ink Bottle's
+        // `DrawCards(1)` is queued first and Pellets' `RemovePlayerDebuffs` second, and
+        // removeDebuffs clears PS::NO_DRAW — so with No Draw up, as-built draws NOTHING and
+        // the swapped order draws a card. Measured 10..21 such cards per encounter once
+        // BATTLE_TRANCE is in the deck (it is the only registered producer of NO_DRAW).
+        //
+        // ⚠⚠ THE DECK IS MEASURED (fifth time). Three candidates, same five relics, same five
+        // encounters, 600 traces each:
+        //
+        //   deck                                   ink(A/S/P/Status)   pellets(A/S/P)  ink+pel  ink+pel
+        //                                                                              same card  &NoDraw
+        //   34 = batch 41's                        823/1473/55/55        136/99/176      50        0
+        //   38 = + 4 BERSERK                       856/938/190/10        533/382/822    149        0
+        //   42 = + 4 BERSERK + 4 BATTLE_TRANCE     812/1215/224/18       592/304/1038   153       81
+        //
+        // 42 wins on every axis that matters. BERSERK is the only registered 0-cost POWER, and
+        // without it `.all()` almost never completes (176 -> 1038 power-side fires).
+        // BATTLE_TRANCE is 0-cost, draws 3, and is the only NO_DRAW producer.
+        // ⚠ The status/curse handler is the one that constrains the ENCOUNTER list rather than
+        // the deck: SLIMED is the only status card the policy can play (CardInstance.cpp:329's
+        // `id != SLIMED` exception), and of everything measured only SLIME_BOSS produces it in
+        // quantity (96 plays across 42 traces on this deck; LARGE_SLIME 0..9, LOTS_OF_SLIMES
+        // and SMALL_SLIMES 0). ⚠ Note the deck fights BACK here: the more 0-cost cards, the
+        // faster the Slime Boss dies and the fewer Slimed get played (360 -> 96).
+        const std::vector<MonsterEncounter> inkPelletEncounters {
+            MonsterEncounter::SLIME_BOSS,  // the corpus' only real source of played SLIMED
+            MonsterEncounter::CHAMP,       // longest fight -> most ink/pellet fires
+            MonsterEncounter::LAGAVULIN,   // the only registered source of negative str/dex
+        };
+        std::vector<CardId> batch42Deck = relicDeck;
+        for (CardId c : {CardId::FLEX, CardId::FLEX, CardId::FLEX, CardId::FLEX,
+                         CardId::GOOD_INSTINCTS, CardId::GOOD_INSTINCTS,
+                         CardId::GOOD_INSTINCTS, CardId::GOOD_INSTINCTS,
+                         CardId::FINESSE, CardId::FINESSE, CardId::FINESSE, CardId::FINESSE,
+                         CardId::BERSERK, CardId::BERSERK, CardId::BERSERK, CardId::BERSERK,
+                         CardId::BATTLE_TRANCE, CardId::BATTLE_TRANCE,
+                         CardId::BATTLE_TRANCE, CardId::BATTLE_TRANCE}) {
+            batch42Deck.push_back(c);
+        }
+        relicVariants.push_back({batch42Deck, 40, false, inkPelletEncounters, 0, 0,
+                                 {{RelicId::INK_BOTTLE,     "ink_bottle"},
+                                  {RelicId::ORANGE_PELLETS, "orange_pellets"},
+                                  {RelicId::KUNAI,          "kunai"},
+                                  {RelicId::ORNAMENTAL_FAN, "ornamental_fan"},
+                                  {RelicId::SHURIKEN,       "shuriken"}},
+                                 {}, 6});
+
         // ⚠⚠ NOT REGISTERED, and the reason is NOT "it was not in the rotation": THE_SPECIMEN.
         // Monster::die ends with
         //     if (bc.player.hasRelic<RelicId::THE_SPECIMEN>()) {
