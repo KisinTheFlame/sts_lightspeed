@@ -3090,6 +3090,253 @@ int main() {
                                   {RelicId::SHURIKEN,       "shuriken"}},
                                  {}, 6});
 
+        // ---- relic sets 7..11 (batch 43): the 38 SINGLE-CALL-SITE relics ----------------
+        //
+        // THE BATCH IS 5-8x the size of the previous three, and the shape is different: instead
+        // of one mechanism per variant, this is one FAMILY of relic per variant. What makes it
+        // possible is that every relic below has exactly ONE read site in src/combat + include/
+        // combat (measured: `grep -rn '\bNAME\b' src/combat include/combat` returns one line),
+        // so each is one or two lines to transcribe. The ~49 multi-hook relics are NOT here.
+        //
+        // ⚠⚠ WHY FIVE VARIANTS AND NOT ONE. `RelicContainer::add` really is free (push_back +
+        // a bit), but COVERAGE DENSITY IS NOT. Batch 41 measured Brimstone shortening fights
+        // from 9.54 to 7.17 turns; stacking 38 relics would collapse every gate's denominator
+        // at once, and several relics would never be observed. The grouping rules used:
+        //   (a) effects must not mask each other  -> Runic Pyramid (never discard) and
+        //       Unceasing Top (draw when hand is empty) are in DIFFERENT variants, and so are
+        //       Orichalcum (`block <= 0` at end of turn) and the four block relics;
+        //   (b) the fight must stay long enough  -> the five `energyPerTurn++` relics, which
+        //       cut fights from ~6 to ~2.5 turns, are quarantined in @relic7 where every
+        //       registered effect is visible in the FIRST snapshot anyway;
+        //   (c) the encounter list must expose that group's gates.
+        // ⚠ Also a hard cap: the harness refuses more than 8 relics per variant (initRelics'
+        //   atBattleStart fixed_list<RelicId,8>), so 38 relics need >= 5 variants regardless.
+        //
+        // ⚠⚠ ENCOUNTERS AND GROUPS WERE MEASURED, NOT GUESSED (sixth time). An instrumented
+        // build counted every gate over 22 candidate encounters x 120 traces, then again with
+        // the five groups actually installed. The per-group tables are in TODOS; the headline
+        // numbers that DECIDED something:
+        //   * Odd Mushroom needs the PLAYER to be Vulnerable: CHAMP 577, COLLECTOR 378,
+        //     HEXAGHOST 0, THREE_BYRDS 0. Two of the four obvious candidates are dead.
+        //   * Ice Cream needs LEFTOVER energy: TIME_EATER 99/79 traces, everything else 1..22.
+        //   * Bloody Idol needs HAND_OF_GREED to land a KILL: THREE_SENTRIES 85, SLIME_BOSS 82,
+        //     CHAMP 9, DONU_AND_DECA 0.
+        //   * Charon's Ashes / Strange Spoon need an EXHAUST event, and the 22-card deck only
+        //     produces them in THREE_SENTRIES / SLIME_BOSS / DONU_AND_DECA (0 everywhere else).
+        //   * Stone Calendar needs turn 6 to be reached: 117..120 of 120 in the long fights,
+        //     1/120 in AWAKENED_ONE and 0/120 in DONU_AND_DECA.
+        //
+        // ⚠ Potions are pinned to BLOCK_POTION in all five, for the batch-42 reason: with both
+        // relics and potions fixed, a variant reads no traceIdx at all, so the measured numbers
+        // above carry over to the installed data EXACTLY, and re-ordering products later cannot
+        // silently change these files.
+
+        // ---- relic set 7: the initRelics one-liners --------------------------------------
+        //
+        // All nine fire unconditionally in BattleContext::initRelics' FIRST pass, so every one
+        // of them is visible in the `initial` snapshot and none needs a long fight.
+        //   BUSTED_CROWN :244 / COFFEE_DRIPPER :248 / CURSED_KEY :256 / FUSION_HAMMER :276 /
+        //   RUNIC_DOME :206 — FIVE separate cases whose bodies are the identical
+        //     `p.energyPerTurn++`. They are kept as five cases (not folded into one) so that
+        //     dropping any single one is observable; +5 energy/turn is exactly why they are
+        //     alone in this variant.
+        //   MUTAGENIC_STRENGTH :288 — `buff<STRENGTH>(3)` + `debuff<LOSE_STRENGTH>(3)`; the
+        //     second goes through the Artifact gate, the first does not.
+        //   FOSSILIZED_HELIX :272 — `buff<BUFFER>(1)`; its two readers are in Player::damage
+        //     (:196) and Player::attacked (:220), at DIFFERENT positions in the two functions.
+        //   DATA_DISK :264 — `buff<FOCUS>(1)`. Focus is never READ in combat (its only reader,
+        //     BIAS, has no producer), so this relic's entire observable surface is the
+        //     `"FOCUS":1` row in the player snapshot.
+        // ⚠ THREAD_AND_NEEDLE is deliberately NOT here: player-side Plated Armor needs unblocked
+        //   ATTACK damage to decrement, and 8 energy per turn ends fights before that happens
+        //   often. It rides in @relic11 instead.
+        const std::vector<MonsterEncounter> batch43Set7 {
+            MonsterEncounter::THE_GUARDIAN,
+            MonsterEncounter::CHAMP,
+        };
+        relicVariants.push_back({relicDeck, 40, false, batch43Set7, 0, 0,
+                                 {{RelicId::BUSTED_CROWN,       "busted_crown"},
+                                  {RelicId::COFFEE_DRIPPER,     "coffee_dripper"},
+                                  {RelicId::CURSED_KEY,         "cursed_key"},
+                                  {RelicId::FUSION_HAMMER,      "fusion_hammer"},
+                                  {RelicId::RUNIC_DOME,         "runic_dome"},
+                                  {RelicId::MUTAGENIC_STRENGTH, "mutagenic_strength"},
+                                  {RelicId::FOSSILIZED_HELIX,   "fossilized_helix"},
+                                  {RelicId::DATA_DISK,          "data_disk"}},
+                                 pinnedPotions, 7});
+
+        // ---- relic set 8: the turn-boundary block / energy family -------------------------
+        //
+        //   ART_OF_WAR      Player.cpp:492  reads attacksPlayedThisTurn == 0 — and the counter
+        //                                   reset sits AFTER this function (BattleContext.cpp
+        //                                   :2240, self-annotated "this has to be here because
+        //                                   some relics check this info"), so it reads LAST
+        //                                   turn's count. Fires 21..34 times per encounter.
+        //   CAPTAINS_WHEEL  :507  `bc.turn == 2`  -> 120/120 traces
+        //   HORN_CLEAT      :529  `bc.turn == 1`  -> 120/120 traces
+        //   CLOAK_CLASP     BattleContext.cpp:2067  block = hand size, queued
+        //   CALIPERS        :2214  THIRD ARM of the block-clearing if/else-if chain
+        //   THE_ABACUS      :2827  +6 block on every shuffle (147..357 per encounter)
+        //   ICE_CREAM       Player.cpp:726  energy CARRIES OVER instead of being overwritten
+        //   POCKETWATCH     Player.cpp:663  draw 3 if <= 3 cards were played LAST turn
+        // ⚠ ORICHALCUM is NOT here on purpose: its gate is `block <= 0` at end of turn, and
+        //   four block relics in one variant would starve it. It is in @relic10 instead.
+        // ⚠ TIME_EATER is in the list for ICE_CREAM alone: it is the only measured encounter
+        //   where the player regularly ends a turn with energy left (99 fires / 79 traces;
+        //   next best is 22).
+        const std::vector<MonsterEncounter> batch43Set8 {
+            MonsterEncounter::THREE_SENTRIES,
+            MonsterEncounter::TIME_EATER,
+            MonsterEncounter::THREE_DARKLINGS,
+        };
+        relicVariants.push_back({relicDeck, 40, false, batch43Set8, 0, 0,
+                                 {{RelicId::ART_OF_WAR,     "art_of_war"},
+                                  {RelicId::CAPTAINS_WHEEL, "captains_wheel"},
+                                  {RelicId::HORN_CLEAT,     "horn_cleat"},
+                                  {RelicId::CLOAK_CLASP,    "cloak_clasp"},
+                                  {RelicId::CALIPERS,       "calipers"},
+                                  {RelicId::THE_ABACUS,     "the_abacus"},
+                                  {RelicId::ICE_CREAM,      "ice_cream"},
+                                  {RelicId::POCKETWATCH,    "pocketwatch"}},
+                                 pinnedPotions, 8});
+
+        // ---- relic set 9: the damage-modifier family --------------------------------------
+        //
+        //   STRIKE_DUMMY   BattleContext.cpp:2708  +3 on Strike-named cards, BEFORE Strength
+        //   PAPER_PHROG    :2753  monster Vulnerable multiplier 1.5f -> 1.75f
+        //   PAPER_KRANE    Monster.cpp:573  monster Weak multiplier 0.75f -> 0.6f
+        //   ODD_MUSHROOM   Monster.cpp:581  PLAYER Vulnerable multiplier 1.5f -> 1.25f
+        //   THE_BOOT       Monster.cpp:340  unblocked 1..4 -> 5   (note: `< 5`)
+        //   TORII          Player.cpp:235   unblocked 1..5 -> 1   (note: `<= 5`)
+        //   CHAMPION_BELT  BattleContext.h:294  Vulnerable on a monster also applies 1 Weak
+        //   UNCEASING_TOP  BattleContext.cpp:825  draw 1 when the hand empties mid-turn
+        // ⚠ Two pairs here look alike and are NOT: Paper Phrog / Odd Mushroom are two different
+        //   functions (cards-hit-monster vs monster-hits-player) that happen to share the 1.5f
+        //   default; The Boot's bound is exclusive and Torii's is inclusive.
+        // ⚠ CHAMP is mandatory: it is the only measured encounter where the player is made
+        //   Vulnerable often (577 hits vs 0 in HEXAGHOST and THREE_BYRDS), and it is also the
+        //   only one where Unceasing Top fires more than a dozen times (81 / 50 traces).
+        //   THREE_BYRDS carries The Boot (984) and Torii (1441); COLLECTOR is the second
+        //   Vulnerable source (378) and the second Weak/Frail source.
+        const std::vector<MonsterEncounter> batch43Set9 {
+            MonsterEncounter::CHAMP,
+            MonsterEncounter::THREE_BYRDS,
+            MonsterEncounter::COLLECTOR,
+        };
+        relicVariants.push_back({relicDeck, 40, false, batch43Set9, 0, 0,
+                                 {{RelicId::STRIKE_DUMMY,  "strike_dummy"},
+                                  {RelicId::PAPER_PHROG,   "paper_phrog"},
+                                  {RelicId::PAPER_KRANE,   "paper_krane"},
+                                  {RelicId::ODD_MUSHROOM,  "odd_mushroom"},
+                                  {RelicId::THE_BOOT,      "the_boot"},
+                                  {RelicId::TORII,         "torii"},
+                                  {RelicId::CHAMPION_BELT, "champion_belt"},
+                                  {RelicId::UNCEASING_TOP, "unceasing_top"}},
+                                 pinnedPotions, 9});
+
+        // ---- relic set 10: the card / exhaust / heal family --------------------------------
+        //
+        //   BIRD_FACED_URN   BattleContext.cpp:1885  heal 2 on every POWER card
+        //   MAGIC_FLOWER     Player.cpp:161          heal amount * 3 / 2 (INTEGER division)
+        //   DUALITY          BattleContext.cpp:1736  +1 Dex and 1 LOSE_DEXTERITY per attack
+        //   CHARONS_ASHES    :2850                   addToTop 3 damage to all, on every exhaust
+        //   STRANGE_SPOON    :2016                   50% not to exhaust — burns cardRandomRng
+        //   RUNIC_PYRAMID    :2519                   the hand is never discarded
+        //   BLOODY_IDOL      Player.cpp:92           heal 5 whenever gold is gained
+        //   ORICHALCUM       BattleContext.cpp:2081  +6 block if block is 0 at end of turn
+        //
+        // ⚠⚠ THE DECK IS DIFFERENT AND EVERY ADDITION HAS A NAMED JOB (sixth "measure first"):
+        //   +4 BERSERK       the only registered 0-cost POWER; without it Bird-Faced Urn fires
+        //                    ~80 times per encounter (only INFLAME is a power in the base deck)
+        //                    and Magic Flower has almost nothing to amplify. With it: 448..600
+        //                    urn heals and 345..441 amplified heals per encounter.
+        //   +2 OFFERING      0-cost, EXHAUSTS, and costs 6 HP. It does three jobs at once:
+        //                    feeds Charon's Ashes and Strange Spoon an exhaust event in every
+        //                    encounter (not just the three that generate status cards), and
+        //                    puts the player BELOW max HP so the heals are observable at all.
+        //   +2 HAND_OF_GREED the ONLY in-combat caller of Player::gainGold, i.e. the only way
+        //                    Bloody Idol can ever fire. It needs to land a KILL
+        //                    (Actions.cpp:1123-1131), which is why the encounter list has two
+        //                    multi-monster fights.
+        // ⚠ Unceasing Top is deliberately in @relic9 instead: Runic Pyramid keeps the hand, so
+        //   the two together would make the "hand is empty" gate structurally unreachable.
+        const std::vector<MonsterEncounter> batch43Set10 {
+            MonsterEncounter::SLIME_BOSS,
+            MonsterEncounter::THREE_SENTRIES,
+            MonsterEncounter::CHAMP,
+        };
+        std::vector<CardId> batch43Deck10 = relicDeck;
+        for (CardId c : {CardId::BERSERK, CardId::BERSERK, CardId::BERSERK, CardId::BERSERK,
+                         CardId::OFFERING, CardId::OFFERING,
+                         CardId::HAND_OF_GREED, CardId::HAND_OF_GREED}) {
+            batch43Deck10.push_back(c);
+        }
+        relicVariants.push_back({batch43Deck10, 40, false, batch43Set10, 0, 0,
+                                 {{RelicId::BIRD_FACED_URN, "bird_faced_urn"},
+                                  {RelicId::MAGIC_FLOWER,   "magic_flower"},
+                                  {RelicId::DUALITY,        "duality"},
+                                  {RelicId::CHARONS_ASHES,  "charons_ashes"},
+                                  {RelicId::STRANGE_SPOON,  "strange_spoon"},
+                                  {RelicId::RUNIC_PYRAMID,  "runic_pyramid"},
+                                  {RelicId::BLOODY_IDOL,    "bloody_idol"},
+                                  {RelicId::ORICHALCUM,     "orichalcum"}},
+                                 pinnedPotions, 10});
+
+        // ---- relic set 11: hp-loss hooks, debuff immunity, long fights ---------------------
+        //
+        //   RUNIC_CUBE        Player.cpp:307  addToTop DrawCards(1) on every hp loss
+        //   SELF_FORMING_CLAY Player.cpp:303  buff<NEXT_TURN_BLOCK>(3) on every hp loss
+        //   TURNIP            Player.h:371    Frail immunity  — and BEFORE the Artifact gate
+        //   GINGER            Player.h:367    Weak immunity   — same, one line above
+        //   THREAD_AND_NEEDLE BattleContext.cpp:354  buff<PLATED_ARMOR>(4) — PLAYER-side plated
+        //                     armor, decremented in Player::attacked (:245) and turned into
+        //                     block in callEndOfTurnActions (:2099). Two sites, one relic case.
+        //   STONE_CALENDAR    :2087           `turn == 6` -> 52 damage to all
+        // ⚠ Only six: the other two hp-loss relics (Centennial Puzzle, Red Skull) are multi-site
+        //   and out of this batch's scope, and adding more block would starve Stone Calendar's
+        //   "the fight is still going on turn 7" gate.
+        // ⚠ Encounters chosen for the intersection of all four gates: CHAMP (frail 294 / weak
+        //   224 / turn-6 120 / hp-loss 704), MAW (120 / 120 / 120 / 864), SLIME_BOSS
+        //   (101 / 78 / 119 / 294). COLLECTOR also clears all four but is already carrying
+        //   @relic9.
+        const std::vector<MonsterEncounter> batch43Set11 {
+            MonsterEncounter::CHAMP,
+            MonsterEncounter::MAW,
+            MonsterEncounter::SLIME_BOSS,
+        };
+        relicVariants.push_back({relicDeck, 40, false, batch43Set11, 0, 0,
+                                 {{RelicId::RUNIC_CUBE,        "runic_cube"},
+                                  {RelicId::SELF_FORMING_CLAY, "self_forming_clay"},
+                                  {RelicId::TURNIP,            "turnip"},
+                                  {RelicId::GINGER,            "ginger"},
+                                  {RelicId::THREAD_AND_NEEDLE, "thread_and_needle"},
+                                  {RelicId::STONE_CALENDAR,    "stone_calendar"}},
+                                 pinnedPotions, 11});
+
+        // ⚠⚠ THE 21 SINGLE-SITE RELICS THAT ARE **NOT** REGISTERED, and why (batch 43 screened
+        // all 70 single-site relics; 11 were already done, 38 are above, these 21 are out):
+        //   * needs orbs (no orb model anywhere): CRACKED_CORE, NUCLEAR_BATTERY,
+        //     SYMBIOTIC_VIRUS, RUNIC_CAPACITOR, FROZEN_CORE.
+        //   * needs a Stance (not modelled, and not in the snapshot): TEARDROP_LOCKET.
+        //   * reads `r.data`, which the engine's `bc.relics` does not carry, and whose value
+        //     from this harness is 0 -> the case is a NO-OP with no observable surface:
+        //     DU_VU_DOLL (`buff<STRENGTH>(r.data)`), GIRYA (same).
+        //   * reads `gc.curRoom` / `gc.lastRoom`, which this harness never sets (both stay
+        //     Room::INVALID), so the branch is structurally unreachable: PANTOGRAPH (BOSS),
+        //     PRESERVED_INSECT (ELITE), SLAVERS_COLLAR (ELITE|BOSS), SLING_OF_COURAGE (ELITE),
+        //     ANCIENT_TEA_SET (lastRoom == REST). ⚠ CLOSING CONDITION: a `Room` field on
+        //     DeckVariant (same default-preserves-bytes trick as `ascension`) plus a `room`
+        //     field in the trace header would open all five at once.
+        //   * conjures a card from the WHOLE POOL, which can be an unregistered card and would
+        //     make the trace unreplayable: ENCHIRIDION, DEAD_BRANCH, NILRYS_CODEX (the last one
+        //     also opens a CARD_SELECT screen).
+        //   * the reference's implementation is COMMENTED OUT, so there is no oracle: MELANGE
+        //     (`// addToBot(Actions::SetState(InputState::SCRY, 3))`, BattleContext.cpp:2832).
+        //   * run-level, not combat: BLACK_BLOOD / BURNING_BLOOD / MEAT_ON_THE_BONE all live in
+        //     the end-of-battle heal switch (BattleContext.cpp:569/575/581), which the trace
+        //     format does not cover.
+        //   * wedges the battle: THE_SPECIMEN, see the note below.
+
         // ⚠⚠ NOT REGISTERED, and the reason is NOT "it was not in the rotation": THE_SPECIMEN.
         // Monster::die ends with
         //     if (bc.player.hasRelic<RelicId::THE_SPECIMEN>()) {
