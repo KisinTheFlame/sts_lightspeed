@@ -278,6 +278,29 @@ struct Step { std::string type; int idx; int target; std::vector<int> idxs; };
 // gate to be TRUE, so the field exists and defaults to 0 (which keeps every existing
 // `{RelicId::X, "name"}` initialiser valid and every committed line byte-identical).
 struct RelicSpec { RelicId id; const char *name; int data = 0; };
+
+// Batch 44. `RelicInstance::data` carries TWO different meanings in initRelics, and the
+// trace format carries them on two different channels because only one of them is a number:
+//
+//   (a) NUMERIC — a cross-combat counter that initRelics copies into a Player field and
+//       updateRelicsOnExit copies back: HAPPY_FLOWER (+1!), INCENSE_BURNER, INK_BOTTLE,
+//       INSERTER, NUNCHAKU, PEN_NIB (data == 9 takes a different branch), SUNDIAL, and
+//       NEOWS_LAMENT (`if (r.data > 0)`, decremented on exit). The replayer cannot guess
+//       these, so they go into a new `relicData` array, emitted ONLY when some numeric
+//       relic carries a non-zero value — which no committed variant does, so all 150
+//       committed files stay byte-identical (proved with --check before any new variant
+//       was added, same two-step as `ascension` / `targetPolicy` / `relicSet`).
+//
+//   (b) BOOLEAN — `p.setHasRelic<X>(r.data)` for OMAMORI and LIZARD_TAIL. Combat only ever
+//       reads the truthiness, and `data == 0` means "this relic does not exist inside the
+//       fight", i.e. handing one out with data 0 is strictly worse than not handing it out
+//       at all. The check below rejects that, so "listed in `relics`" ⟺ "data non-zero"
+//       holds by construction and the replayer needs no field for it. That is what keeps
+//       writhing_mass@relic3 (Omamori, data 2, committed in batch 40) byte-identical.
+static bool relicDataIsNumeric(RelicId id) {
+    return id != RelicId::OMAMORI && id != RelicId::LIZARD_TAIL;
+}
+
 static const std::vector<RelicSpec> RELIC_ROTATION {
     {RelicId::VAJRA,               "vajra"},
     {RelicId::ANCHOR,              "anchor"},
@@ -3313,6 +3336,270 @@ int main() {
                                   {RelicId::STONE_CALENDAR,    "stone_calendar"}},
                                  pinnedPotions, 11});
 
+        // ================= BATCH 44: the multi-site families ==============================
+        //
+        // Batch 43 ate every single-call-site relic. What is left in the combat directory is
+        // ~40 MULTI-site relics (2..9 read points each), so a variant is no longer "eight
+        // one-liners" — Pen Nib alone has nine sites and four of them are in different files.
+        // Six variants, 29 relics.
+        //
+        // ⚠⚠ THE ENABLER IS `RelicInstance::data`. `initRelics` copies it into a Player
+        // counter for eight relics and `updateRelicsOnExit` copies it back; before this batch
+        // the engine's `bc.relics` was `string[]`, so that whole family degenerated. The trace
+        // format now carries the NUMERIC half in `relicData` (emitted only when non-zero — no
+        // committed variant has one, which is why all 150 files still reproduce byte-for-byte)
+        // and leaves the BOOLEAN half (OMAMORI / LIZARD_TAIL, `setHasRelic<X>(r.data)`) to the
+        // "listed implies non-zero" invariant enforced by the check in main(). See
+        // `relicDataIsNumeric` at the top of this file.
+
+        // ---- relic set 12: the cross-combat counters, with NON-ZERO data ------------------
+        //
+        //   HAPPY_FLOWER    BattleContext.cpp:148 (`= r.data + 1`!)  / Player.cpp:521
+        //   INCENSE_BURNER  :156 (`= r.data` then `if (++x == 6)`)   / Player.cpp:535
+        //   SUNDIAL         :218                                     / BattleContext.cpp:2835
+        //   NUNCHAKU        :181                                     / :1740
+        //   PEN_NIB         :189 (`if (r.data == 9)` takes a DIFFERENT branch) / :1686 / :1728
+        //                                                            / :2729 / exit :550
+        // ⚠⚠ THE DATA VALUES ARE THE POINT, not decoration. With data 0 every one of these
+        //   reads is "= 0", i.e. indistinguishable from hard-coding 0 — exactly the reason
+        //   batch 43 EXCLUDED Du-Vu Doll and Girya. The values here are chosen so that each
+        //   read lands on a different observable:
+        //     happy flower  1 -> counter starts at 2, so energy arrives on the player's 2nd
+        //                        turn instead of the 3rd. Also pins the `+1`.
+        //     incense burner 3 -> counter starts at 4, Intangible on the 3rd player turn
+        //                        (a 22-card fight rarely reaches six turns from 0).
+        //     sundial       1 -> energy on the 2nd shuffle instead of the 3rd.
+        //     nunchaku      5 -> energy after 5 more attacks instead of 10.
+        //     pen nib       9 -> the OTHER branch: PEN_NIB is buffed at frame 0 and the
+        //                        counter starts at -1. That branch is unreachable with data 0.
+        // ⚠ Encounters are the two longest 22-card fights measured in batch 43 (CHAMP 9.8
+        //   turns, THREE_DARKLINGS 10.0): the sundial/nunchaku/incense gates all need turns.
+        const std::vector<MonsterEncounter> batch44Set12 {
+            MonsterEncounter::CHAMP,
+            MonsterEncounter::THREE_DARKLINGS,
+        };
+        // ⚠ SACRED_BARK rides along here rather than with Neow's Lament (where it started):
+        //   it is the one relic in the batch whose oracle is the POTIONS, and this variant is
+        //   the only long-fight one that can afford three different pinned potions. Measured:
+        //   with Neow's Lament the monsters are at 1 HP, so Fire Potion's `hasBark ? 40 : 20`
+        //   kills either way and that constant becomes unobservable. Here CHAMP has 420 HP.
+        // ⚠ Three DIFFERENT potions on purpose — three independent probes into the 33 `hasBark`
+        //   ternaries: Fire 40/20 (monster hp), Block 24/12 (player block), Swift 6/3 (hand).
+        const std::vector<Potion> barkPotions {
+            Potion::FIRE_POTION, Potion::BLOCK_POTION, Potion::SWIFT_POTION,
+        };
+        relicVariants.push_back({relicDeck, 40, false, batch44Set12, 0, 0,
+                                 {{RelicId::HAPPY_FLOWER,   "happy_flower",   1},
+                                  {RelicId::INCENSE_BURNER, "incense_burner", 3},
+                                  {RelicId::SUNDIAL,        "sundial",        1},
+                                  {RelicId::NUNCHAKU,       "nunchaku",       5},
+                                  {RelicId::PEN_NIB,        "pen_nib",        9},
+                                  {RelicId::SACRED_BARK,    "sacred_bark"}},
+                                 barkPotions, 12});
+
+        // ---- relic set 13: the "player is losing HP / dying" family -----------------------
+        //
+        //   LIZARD_TAIL       BattleContext.cpp:177 (`setHasRelic<X>(r.data)`) / Player.cpp:339
+        //   RED_SKULL         BattleContext.cpp:436 / Player.cpp:169 / :311   — THREE sites
+        //   TUNGSTEN_ROD      Player.cpp:201 / :239 / :266                    — THREE sites
+        //   CENTENNIAL_PUZZLE Player.cpp:294 (one-shot `setHasRelic(false)`)
+        //   BIRD_FACED_URN    (already registered in batch 43) — it is here as Red Skull's
+        //                     ONLY mid-fight heal source, see below.
+        //
+        // ⚠⚠ CHAMP is mandatory and the reason is Lizard Tail: its 375 committed asc-0 traces
+        //   end in a player death EVERY time (TODOS, batch 29), and a relic that only fires
+        //   `if (curHp <= 0)` has no other way to be observed.
+        // ⚠⚠ RED SKULL'S THREE SITES NEED THREE DIFFERENT SITUATIONS, and the middle one is
+        //   the hard one: `Player::heal` only pays the 3 Strength back when the player crosses
+        //   from bloodied to un-bloodied. Potions cannot do it — `pickAction` drinks everything
+        //   on turn 1, at full HP, where every heal is clamped away. The 4 BERSERK are here so
+        //   that Bird-Faced Urn heals 2 over and over WHILE the player is bloodied.
+        // ⚠ Tungsten Rod is deliberately in the same variant even though it makes the player
+        //   survive longer: its three sites are on all three damage paths, and CHAMP/HEXAGHOST
+        //   hit all three (attack, non-attack `DamagePlayer`, and loseHp from BLOODLETTING).
+        const std::vector<MonsterEncounter> batch44Set13 {
+            MonsterEncounter::CHAMP,
+            MonsterEncounter::HEXAGHOST,
+        };
+        std::vector<CardId> batch44Deck13 = relicDeck;
+        for (CardId c : {CardId::BERSERK, CardId::BERSERK, CardId::BERSERK, CardId::BERSERK}) {
+            batch44Deck13.push_back(c);
+        }
+        relicVariants.push_back({batch44Deck13, 40, false, batch44Set13, 0, 0,
+                                 {{RelicId::LIZARD_TAIL,       "lizard_tail", 1},
+                                  {RelicId::RED_SKULL,         "red_skull"},
+                                  {RelicId::TUNGSTEN_ROD,      "tungsten_rod"},
+                                  {RelicId::CENTENNIAL_PUZZLE, "centennial_puzzle"},
+                                  {RelicId::BIRD_FACED_URN,    "bird_faced_urn"}},
+                                 pinnedPotions, 13});
+
+        // ---- relic set 14: everything visible in the opening frames -----------------------
+        //
+        //   CLOCKWORK_SOUVENIR  :104 + :403  queued BuffPlayer<ARTIFACT>(1)
+        //   GREMLIN_VISAGE      :105 + :407  SYNCHRONOUS `p.debuff<PS::WEAK>(1)`
+        //   RED_MASK            :106 + :415  DebuffAllEnemy<WEAK>(1)
+        //   RING_OF_THE_SNAKE   :107 + :419  DrawCards(2)
+        //   RING_OF_THE_SERPENT :66 (init!) + :325 (an EMPTY case)  cardDrawPerTurn + 1
+        //   SNECKO_EYE          :63 (init!) + :210  cardDrawPerTurn + 2, and Confused
+        //   AKABEKO             :122        buff<VIGOR>(8)
+        //   MERCURY_HOURGLASS   :432 + Player.cpp:551  DamageAllEnemy(3), TWO sites
+        //
+        // ⚠⚠ GINGER IS NOT HERE ON PURPOSE. Gremlin Visage's whole observable surface is one
+        //   stack of Weak on the player, and Ginger is Weak immunity — together it would have
+        //   ZERO evidence. (Ginger's own blind spot is closed in @relic15 instead.)
+        // ⚠ Clockwork Souvenir's Artifact does NOT eat Gremlin Visage's Weak: the Visage case
+        //   is synchronous and runs inside the loop, the Souvenir case is `addToBot`. Order is
+        //   the whole difference and it is observable.
+        // ⚠ Snecko Eye + Ring of the Serpent + Ring of the Snake stack to a 5+2+1 turn draw
+        //   plus 2 on the first turn. That is deliberate: `cardDrawPerTurn` is read by
+        //   `cards.init` BEFORE initRelics runs, so getting the two `init`-site relics wrong
+        //   shifts the opening hand of every trace.
+        // ⚠ THREE_SENTRIES is here for the monsters' ARTIFACT (Red Mask's Weak has to be eaten
+        //   by it), CHAMP for the length.
+        const std::vector<MonsterEncounter> batch44Set14 {
+            MonsterEncounter::THREE_SENTRIES,
+            MonsterEncounter::CHAMP,
+        };
+        relicVariants.push_back({relicDeck, 40, false, batch44Set14, 0, 0,
+                                 {{RelicId::CLOCKWORK_SOUVENIR,  "clockwork_souvenir"},
+                                  {RelicId::GREMLIN_VISAGE,      "gremlin_visage"},
+                                  {RelicId::RED_MASK,            "red_mask"},
+                                  {RelicId::RING_OF_THE_SNAKE,   "ring_of_the_snake"},
+                                  {RelicId::RING_OF_THE_SERPENT, "ring_of_the_serpent"},
+                                  {RelicId::SNECKO_EYE,          "snecko_eye"},
+                                  {RelicId::AKABEKO,             "akabeko"},
+                                  {RelicId::MERCURY_HOURGLASS,   "mercury_hourglass"}},
+                                 pinnedPotions, 14});
+
+        // ---- relic set 15: Artifact x (Ginger / Turnip / Champion Belt) + Mark of the Bloom -
+        //
+        // ⚠⚠ THIS VARIANT EXISTS TO CLOSE THREE BLIND SPOTS BATCH 43 LEFT OPEN, and the closing
+        //   condition it wrote down is exactly this: "a variant that also carries an Artifact
+        //   source". Clockwork Souvenir is that source (batch 44 registers it).
+        //     GINGER / TURNIP  sit BEFORE the Artifact gate in Player::debuff (Player.h:367/371)
+        //                      -> a Weak/Frail they block must cost ZERO Artifact charges.
+        //     CHAMPION_BELT    sits at the end of `debuffEnemy` (BattleContext.h:294) -> the
+        //                      extra Weak goes through Monster::addDebuff's own Artifact gate.
+        //   MARK_OF_THE_BLOOM  Player.cpp:156 (heal returns early) / :331 (no fairy, no tail)
+        //   MARK_OF_PAIN       :112 (energyPerTurn++) + :411 (two WOUNDs into the DRAW pile)
+        //                      — the only relic in the reference that is in both initRelics
+        //                      passes.
+        //   BIRD_FACED_URN     again the heal source: with Mark of the Bloom every one of those
+        //                      heals must become a no-op. Without a heal source that relic has
+        //                      no observable surface at all.
+        // ⚠ CHAMP is the encounter that applies BOTH Weak and Frail to the player often
+        //   (batch 43 measured 224 / 294); THREE_SENTRIES carries the monster-side ARTIFACT 1.
+        const std::vector<MonsterEncounter> batch44Set15 {
+            MonsterEncounter::CHAMP,
+            MonsterEncounter::THREE_SENTRIES,
+        };
+        std::vector<CardId> batch44Deck15 = relicDeck;
+        for (CardId c : {CardId::BERSERK, CardId::BERSERK, CardId::BERSERK, CardId::BERSERK}) {
+            batch44Deck15.push_back(c);
+        }
+        relicVariants.push_back({batch44Deck15, 40, false, batch44Set15, 0, 0,
+                                 {{RelicId::CLOCKWORK_SOUVENIR, "clockwork_souvenir"},
+                                  {RelicId::GINGER,             "ginger"},
+                                  {RelicId::TURNIP,             "turnip"},
+                                  {RelicId::CHAMPION_BELT,      "champion_belt"},
+                                  {RelicId::MARK_OF_THE_BLOOM,  "mark_of_the_bloom"},
+                                  {RelicId::MARK_OF_PAIN,       "mark_of_pain"},
+                                  {RelicId::BIRD_FACED_URN,     "bird_faced_urn"}},
+                                 pinnedPotions, 15});
+
+        // ---- relic set 16: energy / cost / card-play family --------------------------------
+        //
+        //   ECTOPLASM      :136 + Player.cpp:87    energyPerTurn++, and gainGold returns early
+        //   SOZU           :214 + :2249            energyPerTurn++, and obtainPotion refuses
+        //   VELVET_CHOKER  :222 + :726             energyPerTurn++, and the 7th card is illegal
+        //   WRIST_BLADE    :2712                   +4 damage on a card whose costForTurn is 0
+        //   MUMMIFIED_HAND :1905 (+ :1833, an EMPTY `// todo`)  a random non-0-cost hand card
+        //                                          becomes 0 for the turn — burns cardRandomRng
+        //   WARPED_TONGS   :450 + Player.cpp:669   upgrade a random hand card — burns shuffleRng
+        //   NECRONOMICON   :1722 + Player.cpp:555  the turn's first >=2-cost attack is replayed
+        //   CHEMICAL_X     Actions.cpp:1267        Whirlwind hits `energy + 2` times
+        //
+        // ⚠⚠ POTIONS ARE PINNED TO ENTROPIC BREW, not to Block Potion, and that is Sozu's only
+        //   oracle: `BattleContext::obtainPotion` is called from exactly one place in combat
+        //   (the brew refilling the slots). With Sozu the refill is refused, so the potion
+        //   slots stay empty for the rest of the fight — a diff you can see frame by frame.
+        // ⚠⚠ THE DECK IS DIFFERENT AND EVERY ADDITION HAS A NAMED JOB:
+        //   +2 WHIRLWIND     the only registered X-cost attack, i.e. Chemical X's only oracle.
+        //   +2 HAND_OF_GREED the only in-combat `Player::gainGold` caller, i.e. Ectoplasm's.
+        //   +4 BERSERK       the only registered 0-cost POWER card, i.e. the only way to make
+        //                    Mummified Hand fire more than once or twice a fight.
+        //   (ANGER is already in BATCH_1 and is a 0-cost ATTACK, which is what Wrist Blade
+        //    needs; Mummified Hand manufactures more 0-cost cards as it goes.)
+        // ⚠ Three `energyPerTurn++` stack to 6 energy. Batch 43 measured five of them dropping
+        //   the average fight to 2.5 turns, so three is the ceiling here — and Velvet Choker's
+        //   6-card cap pushes back in the other direction, which is itself the thing to observe.
+        // ⚠ Three encounters, and each one is carrying a different gate (measured, 120 each):
+        //   THREE_SENTRIES  Hand of Greed lands 46 KILLS / 41 traces -> Ectoplasm's only gate.
+        //                   (CHAMP only manages 9 / 9: one 420-HP monster is hard to finish
+        //                   with a 20-damage card.) Its fights are short (1.16 turns), which is
+        //                   fine because Ectoplasm fires on the kill, not per turn.
+        //   CHAMP           5.10 turns, 244 Whirlwinds, and the 6-card cap hit 68 times / 60
+        //                   traces -> Velvet Choker and Chemical X.
+        //   THREE_DARKLINGS the long one (10.0 turns on the plain deck) -> Warped Tongs and
+        //                   Necronomicon's once-per-turn reset need turns, and three
+        //                   `energyPerTurn++` make everything else end early.
+        const std::vector<MonsterEncounter> batch44Set16 {
+            MonsterEncounter::THREE_SENTRIES,
+            MonsterEncounter::CHAMP,
+            MonsterEncounter::THREE_DARKLINGS,
+        };
+        const std::vector<Potion> brewPotions { Potion::ENTROPIC_BREW };
+        std::vector<CardId> batch44Deck16 = relicDeck;
+        for (CardId c : {CardId::WHIRLWIND, CardId::WHIRLWIND,
+                         CardId::HAND_OF_GREED, CardId::HAND_OF_GREED,
+                         CardId::BERSERK, CardId::BERSERK, CardId::BERSERK, CardId::BERSERK}) {
+            batch44Deck16.push_back(c);
+        }
+        relicVariants.push_back({batch44Deck16, 40, false, batch44Set16, 0, 0,
+                                 {{RelicId::ECTOPLASM,      "ectoplasm"},
+                                  {RelicId::SOZU,           "sozu"},
+                                  {RelicId::VELVET_CHOKER,  "velvet_choker"},
+                                  {RelicId::WRIST_BLADE,    "wrist_blade"},
+                                  {RelicId::MUMMIFIED_HAND, "mummified_hand"},
+                                  {RelicId::WARPED_TONGS,   "warped_tongs"},
+                                  {RelicId::NECRONOMICON,   "necronomicon"},
+                                  {RelicId::CHEMICAL_X,     "chemical_x"}},
+                                 brewPotions, 16});
+
+        // ---- relic set 17: Neow's Lament, on its own ---------------------------------------
+        //
+        //   NEOWS_LAMENT  :293 (`if (r.data > 0)` -> every monster's curHp = 1) + exit :540
+        //
+        // ⚠⚠ IT HAS TO BE ALONE, and that was measured: with every monster at 1 HP the fight is
+        //   over before the first end-of-turn (0.00 turns, 1 step per trace), so any relic
+        //   sharing this variant would have no turns to fire in. Sacred Bark started here and
+        //   was moved to @relic12 for exactly that reason — Fire Potion's `hasBark ? 40 : 20`
+        //   kills a 1-HP monster either way.
+        // ⚠⚠ THE ENCOUNTERS ARE THE RESERVED-SLOT ONES ON PURPOSE. Neow's loop is a bare
+        //   `i < monsterCount` with NO filter (same family as Philosopher's Stone, the opposite
+        //   of Brimstone's `isTargetable()`), so the slots that were NEVER CONSTRUCTED —
+        //   AUTOMATON's 0 and 2, COLLECTOR's 0 and 1 — also get `curHp = 1`. Measured: 360
+        //   monster entries at hp 1 per file, of which **240 are those empty slots**, and they
+        //   flip to `alive: true` because `isDying()` is `curHp <= 0`. That is the only place
+        //   in the corpus where the missing filter is observable.
+        // ⚠⚠⚠ AND THAT COMBINATION IS ALSO A LANDMINE — the potions below are load-bearing.
+        //   A resurrected empty slot is targetable, so `firstAliveMonster` is slot 0 and the
+        //   very first action kills a monster that was never part of `monstersAlive`. With a
+        //   Fire Potion that lands on step 1 and the fight ends (`--monstersAlive` takes the
+        //   real count 1 -> 0 = victory). Measured with a Block Potion instead, i.e. letting
+        //   the player attack over several turns, COLLECTOR aborts the whole generator on its
+        //   SECOND trace: `assert(false)` in BattleContext::executeActions:753, reached via
+        //   `monsters.monstersAlive < 0`. That is not a reference bug to patch — it is a
+        //   configuration the real game cannot produce (Neow's Lament never meets a reserved
+        //   slot before the host is built). Keep the Fire Potion.
+        const std::vector<MonsterEncounter> batch44Set17 {
+            MonsterEncounter::AUTOMATON,
+            MonsterEncounter::COLLECTOR,
+        };
+        relicVariants.push_back({relicDeck, 40, false, batch44Set17, 0, 0,
+                                 {{RelicId::NEOWS_LAMENT, "neows_lament", 1}},
+                                 barkPotions, 17});
+
         // ⚠⚠ THE 21 SINGLE-SITE RELICS THAT ARE **NOT** REGISTERED, and why (batch 43 screened
         // all 70 single-site relics; 11 were already done, 38 are above, these 21 are out):
         //   * needs orbs (no orb model anywhere): CRACKED_CORE, NUCLEAR_BATTERY,
@@ -3400,6 +3687,20 @@ int main() {
                          "suffix AND the fingerprint dimension)" << std::endl;
             return 1;
         }
+        // Batch 44. OMAMORI / LIZARD_TAIL are the two relics initRelics feeds through
+        // `p.setHasRelic<X>(r.data)`: data 0 clears the player's bit, so the relic is
+        // INVISIBLE for the whole fight. Handing one out that way is never what a variant
+        // means, and it is also the invariant the trace format leans on — the replayer
+        // reconstructs their data as "listed ⇒ non-zero" instead of carrying a field.
+        for (const auto &rs : v.relics) {
+            if (!relicDataIsNumeric(rs.id) && rs.data == 0) {
+                std::cerr << "relic variant hands out " << rs.name
+                          << " with data 0, which makes it invisible inside combat "
+                             "(setHasRelic<X>(r.data)); give it its real charge count"
+                          << std::endl;
+                return 1;
+            }
+        }
     }
     {
         // Every explicit-loadout variant must own its relicSet number: two variants sharing
@@ -3462,16 +3763,23 @@ int main() {
                 // which is what keeps the rotation's assignment to every OTHER variant
                 // unchanged.
                 std::vector<std::string> relicNames;
+                std::vector<int> relicData;   // parallel to relicNames; see relicDataIsNumeric
+                bool anyNumericData = false;
+                const auto addRelic = [&](const RelicSpec &rs) {
+                    gc.relics.add({rs.id, rs.data});
+                    relicNames.push_back(rs.name);
+                    const int d = relicDataIsNumeric(rs.id) ? rs.data : 0;
+                    relicData.push_back(d);
+                    if (d != 0) anyNumericData = true;
+                };
                 if (variant.relics.empty()) {
                     for (int k = 0; k < 2; ++k) {
                         const auto &rs = RELIC_ROTATION[(traceIdx * 2 + static_cast<size_t>(k)) % RELIC_ROTATION.size()];
-                        gc.relics.add({rs.id, rs.data});
-                        relicNames.push_back(rs.name);
+                        addRelic(rs);
                     }
                 } else {
                     for (const auto &rs : variant.relics) {
-                        gc.relics.add({rs.id, rs.data});
-                        relicNames.push_back(rs.name);
+                        addRelic(rs);
                     }
                 }
 
@@ -3590,6 +3898,10 @@ int main() {
                 std::cout << "," << q("character") << ":" << q("ironclad")
                           << "," << q("potionRngSeed") << ":" << q(std::to_string(sd.value))
                           << "," << q("relics") << ":" << strArr(relicNames);
+                // Parallel to `relics`; see relicDataIsNumeric above. Emitted only when some
+                // relic carries a non-zero NUMERIC data, which no committed variant does —
+                // so every line written before this field existed stays byte-identical.
+                if (anyNumericData) std::cout << "," << q("relicData") << ":" << arr(relicData);
 
                 std::vector<std::string> deck;
                 std::vector<int> deckUpgraded;
