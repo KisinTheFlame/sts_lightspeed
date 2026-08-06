@@ -312,14 +312,46 @@ static const std::vector<RelicSpec> RELIC_ROTATION {
     {RelicId::BAG_OF_PREPARATION,  "bag_of_preparation"},
 };
 
-static bool isReplayablePotion(Potion p) {
+// Potions sts-combat has a POTION_RULES entry for. Drinking anything else would make the trace
+// UNREPLAYABLE (the TS side throws "sts-combat 暂未登记药水") rather than merely unverified.
+//
+// ⚠⚠ TWO LISTS, AND THE SPLIT IS LOAD-BEARING (batch 45). This gate does not only decide what
+// an explicitly-loadout-ed variant may drink: ENTROPIC_BREW refills the slots with potions drawn
+// from the WHOLE pool, and ~3/13 of every rotation-fed trace holds a brew. So widening the list
+// globally would make the policy start drinking brew-conjured potions it used to skip — i.e. it
+// would rewrite a large fraction of the 163 COMMITTED files. Measured consequence, not a worry:
+// the committed corpus is the oracle, and `--check` compares it byte for byte.
+//
+// The widened list is therefore reachable only from a variant with a non-zero `potionSet`, which
+// by construction is a variant whose rows land in a brand-new `@potN` file. Every pre-batch-45
+// variant has potionSet 0 and keeps exactly the 13 potions it always had.
+//
+// ⚠ Corollary for future batches: to hand out a newly registered potion you must open a `@potN`
+// variant. Adding one to an `@relicN` variant is NOT possible without changing committed data.
+static bool isReplayablePotion(Potion p, bool extended) {
     switch (p) {
+        // ---- the original 13 (batches 1-13; frozen, see above) --------------------------
         case Potion::BLOCK_POTION: case Potion::FIRE_POTION: case Potion::STRENGTH_POTION:
         case Potion::WEAK_POTION: case Potion::FEAR_POTION: case Potion::ENERGY_POTION:
         case Potion::SWIFT_POTION: case Potion::DEXTERITY_POTION: case Potion::BLOOD_POTION:
         case Potion::ANCIENT_POTION: case Potion::EXPLOSIVE_POTION: case Potion::FRUIT_JUICE:
         case Potion::ENTROPIC_BREW:
             return true;
+
+        // ---- batch 45's 15 (only for potionSet != 0 variants) ---------------------------
+        // Pure player-status buffs whose Power the engine already models:
+        case Potion::FLEX_POTION: case Potion::SPEED_POTION: case Potion::HEART_OF_IRON:
+        case Potion::LIQUID_BRONZE: case Potion::ESSENCE_OF_STEEL: case Potion::GHOST_IN_A_JAR:
+        case Potion::FOCUS_POTION: case Potion::REGEN_POTION: case Potion::CULTIST_POTION:
+        case Potion::DUPLICATION_POTION:
+        // Actions the engine already has (Armaments+ / Purity / Havoc) or that only rewrite
+        // EXISTING cards' cost — never conjure a definition out of CardPools.h:
+        case Potion::BLESSING_OF_THE_FORGE: case Potion::ELIXIR_POTION:
+        case Potion::SNECKO_OIL: case Potion::DISTILLED_CHAOS:
+        // Single-card select over the discard pile; the enumerator supports the task.
+        case Potion::LIQUID_MEMORIES:
+            return extended;
+
         default:
             return false;
     }
@@ -478,15 +510,41 @@ static bool pickCardSelectAction(const BattleContext &bc, Step &out) {
     return false;
 }
 
-static bool pickAction(const BattleContext &bc, int targetPolicy, Step &out) {
+// ---- when the policy is willing to drink (batch 45) ------------------------------------
+//
+// potionPolicy 0 is the historical behaviour and the reason this axis exists: `pickAction`
+// offers potions BEFORE cards and never refuses, so all three are gone on turn 1, at FULL
+// health, before a single card is played. Three whole families of behaviour are invisible
+// under it and every one of them was measured, not guessed:
+//
+//   * heal amounts. Player::heal ends with `min(maxHp, ...)`, so Blood Potion's 40% and the
+//     20% the reference gives Sacred Bark carriers collapse onto the same number. That is
+//     exactly why TODOS' "血之药水 × 神圣树皮" ruling fails criterion ① (no divergence in the
+//     data) rather than ③ — see the note there.
+//   * anything gated on the player being hurt.
+//   * "drink after the monsters have put block up" (batch 42's Hand Drill note).
+//
+// potionPolicy 1 = BLOODIED: hold every potion until the player is at or below half of maxHp.
+//   * The predicate is `curHp * 2 <= maxHp`, deliberately the same integer form the reference
+//     itself uses for "bloodied" (Player::heal's `wasBloodied`, Red Skull, Blood Vial).
+//   * It cannot fire on turn 1: GameContext::initPlayer enters combat at full HP below asc 6.
+//   * With Ironclad's maxHp 80 it guarantees curHp <= 40, so Blood Potion's as-built 32 lands
+//     UNCLAMPED — the 40%/20% pair is separated by 16 HP rather than folded together.
+static bool mayDrinkNow(const BattleContext &bc, int potionPolicy) {
+    if (potionPolicy == 0) return true;
+    return bc.player.curHp * 2 <= bc.player.maxHp;
+}
+
+static bool pickAction(const BattleContext &bc, int targetPolicy, int potionPolicy,
+                       bool extendedPotions, Step &out) {
     const int target = policyTarget(bc, targetPolicy);
     // Drink before attacking, so potion buffs are visible in the same turn's card maths.
-    for (int i = 0; i < bc.potionCapacity; ++i) {
+    for (int i = 0; mayDrinkNow(bc, potionPolicy) && i < bc.potionCapacity; ++i) {
         if (bc.potions[i] == Potion::EMPTY_POTION_SLOT) continue;
         // Entropic Brew refills slots with arbitrary potions, some of which open a
         // card-select screen the trace format cannot express. Only drink what
         // sts-combat has registered.
-        if (!isReplayablePotion(bc.potions[i])) continue;
+        if (!isReplayablePotion(bc.potions[i], extendedPotions)) continue;
         search::Action a(search::ActionType::POTION, i, target);
         if (a.isValidAction(bc)) { out = {"potion", i, target}; return true; }
     }
@@ -659,6 +717,31 @@ int main() {
         // safe under the usual rule (identical deck ⇒ disjoint encounter lists), and there
         // is no reason to take that risk here.
         int relicSet = 0;
+
+        // ---- potion axis (batch 45) ------------------------------------------------------
+        //
+        // Both default to 0 and are emitted into the trace header only when non-zero, so every
+        // variant declared before they existed keeps emitting byte-identical traces — the fifth
+        // use of the `ascension` / `targetPolicy` / `relicSet` / `relicData` trick. Proved
+        // rather than assumed: tools/regen-traces.sh --check reproduced all 163 committed files
+        // byte-for-byte with these two fields (and the whole widened potion list) in place and
+        // `potionVariants` still empty.
+        //
+        // `potionSet` is the IDENTITY, exactly like `relicSet`: it is the `@potN` file-name
+        // suffix AND a fingerprint dimension in split-traces.mjs / variant0-rows.mjs, and it
+        // additionally decides whether `isReplayablePotion` uses the widened list (see there
+        // for why that cannot be a global switch).
+        //
+        // ⚠⚠ WHY TWO FIELDS AND NOT ONE. The obvious design — "the timing knob is also the
+        // file name", the shape `targetPolicy`/`@tgtN` has — does not survive contact with the
+        // second half of this line of work: covering 15 new potions needs SEVERAL variants that
+        // all share one timing rule, and each of them needs its own file. So the identity and
+        // the policy are separated, the same way `relicSet` is separate from the `relics` list
+        // it names.
+        int potionSet = 0;
+        // 0 = drink everything on turn 1 at full health (historical), 1 = only once the player
+        // is bloodied. See mayDrinkNow above for what each one is for.
+        int potionPolicy = 0;
     };
 
     // Batch 1 (already registered, verified by the committed variant-0 traces).
@@ -3637,6 +3720,21 @@ int main() {
         // with the cards the reference never implemented (SEEK et al): no oracle exists.
     }
 
+    // ================= potion axis (batch 45), the SIXTH product =========================
+    //
+    // Same encounter list as the relic product — the potions being covered are not tied to any
+    // particular monster, and listing all 54 up front is free (a variant that does not name an
+    // encounter is `continue`d before the seed loop and burns no traceIdx).
+    std::vector<std::pair<MonsterEncounter, const char *>> potionEncounters = relicEncounters;
+
+    std::vector<DeckVariant> potionVariants;
+    {
+        // Same 22-card act-2/act-3 standard deck the relic line uses, verbatim.
+        std::vector<CardId> potionDeck = BATCH_1;
+        potionDeck.push_back(CardId::SPOT_WEAKNESS);
+        (void) potionDeck;
+    }
+
     for (const auto &v : variants) {
         // 10 starter cards are added by the GameContext constructor.
         if (static_cast<int>(v.extra.size()) + 10 > Deck::MAX_SIZE) {
@@ -3711,6 +3809,61 @@ int main() {
         std::sort(sets.begin(), sets.end());
         if (std::adjacent_find(sets.begin(), sets.end()) != sets.end()) {
             std::cerr << "two relic variants share a relicSet number" << std::endl;
+            return 1;
+        }
+    }
+    for (const auto &v : potionVariants) {
+        if (static_cast<int>(v.extra.size()) + 10 > Deck::MAX_SIZE) {
+            std::cerr << "potion deck variant exceeds Deck::MAX_SIZE (" << Deck::MAX_SIZE << "): "
+                      << (v.extra.size() + 10) << " cards" << std::endl;
+            return 1;
+        }
+        if (v.relics.size() > 8) {
+            std::cerr << "potion variant names more than 8 relics" << std::endl;
+            return 1;
+        }
+        if (v.potionSet == 0) {
+            std::cerr << "potion variant must carry a non-zero potionSet (it is the file-name "
+                         "suffix, the fingerprint dimension AND the switch that widens "
+                         "isReplayablePotion)" << std::endl;
+            return 1;
+        }
+        // ⚠⚠ THE INVARIANT THAT KEEPS TWO ACTIVE LINES FROM COLLIDING. `traceIdx` drives
+        // exactly two things: the relic rotation and the potion rotation. A variant that pins
+        // BOTH therefore emits traces that do not depend on where it sits in the product order
+        // at all (the batch-42 note in WORKFLOW). The relic line still appends a variant to
+        // `relicVariants` every batch, and `relicVariants` is emitted BEFORE this product — so
+        // without this check the next relic batch would shift every traceIdx handed out here
+        // and invalidate every committed `@potN` file.
+        if (v.relics.empty() || v.potions.empty()) {
+            std::cerr << "potion variant must pin BOTH its relics and its potions, otherwise it "
+                         "reads traceIdx and the next relic batch invalidates its files"
+                      << std::endl;
+            return 1;
+        }
+        for (const auto &rs : v.relics) {
+            if (!relicDataIsNumeric(rs.id) && rs.data == 0) {
+                std::cerr << "potion variant hands out " << rs.name << " with data 0" << std::endl;
+                return 1;
+            }
+        }
+        // DISTILLED_CHAOS plays the draw pile's top card with no gate at all (same hole HAVOC
+        // opened in batch 10). The deck is the only place an unregistered card could come from
+        // here, so check it rather than trusting the encounter list.
+        for (auto cid : v.extra) {
+            if (!isReplayableCard(cid) || isPoolConjuringCard(cid)) {
+                std::cerr << "potion variant deck holds a card Distilled Chaos must not be able "
+                             "to auto-play: " << getCardEnumName(cid) << std::endl;
+                return 1;
+            }
+        }
+    }
+    {
+        std::vector<int> sets;
+        for (const auto &v : potionVariants) sets.push_back(v.potionSet);
+        std::sort(sets.begin(), sets.end());
+        if (std::adjacent_find(sets.begin(), sets.end()) != sets.end()) {
+            std::cerr << "two potion variants share a potionSet number" << std::endl;
             return 1;
         }
     }
@@ -3877,6 +4030,20 @@ int main() {
                 if (variant.relicSet != 0) {
                     std::cout << "," << q("relicSet") << ":" << variant.relicSet;
                 }
+                // Same trick a fourth time, for the potion axis (batch 45). `potionSet` is the
+                // `@potN` file-name suffix + fingerprint dimension; `potionPolicy` says WHEN the
+                // policy was willing to drink. Both emitted only when non-zero.
+                //
+                // ⚠ The replayer needs NEITHER: every drink is already recorded verbatim as a
+                // `potion` step and the slots are in every snapshot. They exist so
+                // split-traces.mjs can give these traces their own files, and so a reader can
+                // tell which policy produced a line.
+                if (variant.potionSet != 0) {
+                    std::cout << "," << q("potionSet") << ":" << variant.potionSet;
+                }
+                if (variant.potionPolicy != 0) {
+                    std::cout << "," << q("potionPolicy") << ":" << variant.potionPolicy;
+                }
                 // Player HP *entering* the fight, i.e. gc.curHp BEFORE BattleContext::init.
                 //
                 // The `initial` snapshot is taken AFTER init, and init already ran
@@ -3929,7 +4096,8 @@ int main() {
                         // A card-select screen is open — answer it before anything else.
                         if (!pickCardSelectAction(bc, s)) break;
                     } else if (bc.inputState == InputState::PLAYER_NORMAL) {
-                        pickAction(bc, variant.targetPolicy, s);
+                        pickAction(bc, variant.targetPolicy, variant.potionPolicy,
+                                   variant.potionSet != 0, s);
                     } else {
                         // Stance / gambling / scry screens still have no trace encoding;
                         // stop rather than emit something the replayer cannot express.
@@ -3998,6 +4166,16 @@ int main() {
     // reproduced all 116 committed files byte-for-byte before the first relic variant was
     // filled in.
     emitProduct(relicVariants, relicEncounters);
+    // ⚠ MUST stay last from here on (batch 45). Adding this call with `potionVariants` still
+    // empty is a no-op, and that was proved rather than assumed: tools/regen-traces.sh --check
+    // reproduced all 163 committed files byte-for-byte before the first potion variant was
+    // filled in.
+    //
+    // ⚠⚠ Unlike every earlier "must stay last", this one does NOT freeze `relicVariants`:
+    // every variant in this product is required to pin both its relics and its potions (see
+    // the check above), so it reads no traceIdx and appending to the relic product ahead of it
+    // stays free. That check is what buys the relic line the right to keep growing.
+    emitProduct(potionVariants, potionEncounters);
 
     std::cout << "]}" << std::endl;
     return 0;
