@@ -3729,10 +3729,188 @@ int main() {
 
     std::vector<DeckVariant> potionVariants;
     {
-        // Same 22-card act-2/act-3 standard deck the relic line uses, verbatim.
+        // Same 22-card act-2/act-3 standard deck the relic line uses, verbatim. Nothing here
+        // needs a special deck: what a potion does is (with two exceptions noted below) a
+        // function of the player, not of what is standing in front of them.
         std::vector<CardId> potionDeck = BATCH_1;
         potionDeck.push_back(CardId::SPOT_WEAKNESS);
-        (void) potionDeck;
+
+        // ⚠ Every variant below pins its relics too (the harness rejects an empty list; see
+        // the check above for why). VAJRA is the inert choice: +1 Strength in initRelics and
+        // not one further call site, so it cannot interact with any potion. The `@potN` B-side
+        // of each pair adds SACRED_BARK and CHANGES NOTHING ELSE, which turns each pair into a
+        // line-by-line A/B for the `hasBark ? A : B` ternary of all three potions it carries.
+        const std::vector<RelicSpec> PLAIN {{RelicId::VAJRA, "vajra"}};
+        const std::vector<RelicSpec> BARK  {{RelicId::VAJRA,       "vajra"},
+                                            {RelicId::SACRED_BARK, "sacred_bark"}};
+
+        const auto add = [&](int set, int policy, std::vector<Potion> pots,
+                             const std::vector<RelicSpec> &relics,
+                             std::vector<MonsterEncounter> encs) {
+            potionVariants.push_back({potionDeck, 40, false, std::move(encs), 0, 0, relics,
+                                      std::move(pots), 0, set, policy});
+        };
+
+        // ---- group 1: the potions that are DEAD under potionPolicy 0 ---------------------
+        //
+        // This is the group the timing axis exists for, and both members were measured to be
+        // structurally unobservable under the historical policy (840 traces x 7 encounters,
+        // numbers in TODOS):
+        //
+        //   BLOOD_POTION — `Player::heal` ends with `min(maxHp, ...)`. Under policy 0 all
+        //     three are drunk on turn 0 at 80/80, so the heal applied was 0 in 360 / 360
+        //     drinks. Under policy 1 it is 32 every single time (40% of 80, unclamped because
+        //     the gate guarantees curHp <= 40) and the SACRED_BARK B-side is 16. That pair is
+        //     what TODOS' "血之药水 × 神圣树皮" ruling was waiting for.
+        //   LIQUID_MEMORIES — `BetterDiscardPileToHandAction` returns immediately on an empty
+        //     discard pile, and on turn 0 before any card is played the discard pile is ALWAYS
+        //     empty: 360 / 360 drinks did nothing. Under policy 1 the average discard pile is
+        //     8.4 cards and the card-select branch fires 1361 times.
+        //   GHOST_IN_A_JAR rides along to fill the third slot; it is one of the two potions
+        //     Ironclad cannot roll from its own pool (Silent-only), so an explicit list is the
+        //     only way to reach it at all.
+        //
+        // ⚠ Encounters are measured, not guessed. Under policy 1 the player must actually get
+        // bloodied, and in 3 of the 7 candidates it usually does not: three_sentries left 112
+        // of 120 traces with ZERO drinks, gremlin_nob 95, lagavulin 66. champ (0) and
+        // three_darklings (0) are the two that always deliver.
+        const std::vector<MonsterEncounter> G1_ENC {
+            MonsterEncounter::CHAMP,
+            MonsterEncounter::THREE_DARKLINGS,
+        };
+        const std::vector<Potion> G1 {
+            Potion::BLOOD_POTION, Potion::LIQUID_MEMORIES, Potion::GHOST_IN_A_JAR,
+        };
+        add(1, 1, G1, PLAIN, G1_ENC);
+        add(2, 1, G1, BARK,  G1_ENC);
+
+        // ---- group 2: the three "stat + payback" potions ---------------------------------
+        //
+        //   FLEX_POTION  Strength +5 and LOSE_STRENGTH 5 (the debuff half goes through
+        //                Artifact, so Artifact carriers keep the Strength for free).
+        //   SPEED_POTION the same shape one enum apart, Dexterity / LOSE_DEXTERITY.
+        //   ESSENCE_OF_STEEL player-side Plated Armor 4 — decremented in Player::attacked and
+        //                turned into block in callEndOfTurnActions, so it needs a monster that
+        //                actually hits. champ does; three_darklings adds the half-dead frames.
+        const std::vector<Potion> G2 {
+            Potion::FLEX_POTION, Potion::SPEED_POTION, Potion::ESSENCE_OF_STEEL,
+        };
+        add(3, 0, G2, PLAIN, {MonsterEncounter::CHAMP, MonsterEncounter::THREE_DARKLINGS});
+        add(4, 0, G2, BARK,  {MonsterEncounter::CHAMP});
+
+        // ---- group 3: turn-boundary and reaction Powers -----------------------------------
+        //
+        //   HEART_OF_IRON  Metallicize 6 — block at every turn end, so it wants a long fight.
+        //   LIQUID_BRONZE  Thorns 3 — only visible when a monster attacks.
+        //   FOCUS_POTION   Focus 2 — the reference never READS Focus in combat, so its whole
+        //                  observable surface is the snapshot row. (Defect-only potion, same
+        //                  "explicit list is the only way" note as Ghost In A Jar.)
+        const std::vector<Potion> G3 {
+            Potion::HEART_OF_IRON, Potion::LIQUID_BRONZE, Potion::FOCUS_POTION,
+        };
+        add(5, 0, G3, PLAIN, {MonsterEncounter::CHAMP, MonsterEncounter::HEXAGHOST});
+        add(6, 0, G3, BARK,  {MonsterEncounter::CHAMP});
+
+        // ---- group 4: the three Powers that need TURNS or CARDS after the drink ----------
+        //
+        //   REGEN_POTION       player-side Regen 5 — heals and decrements at every turn end
+        //                      (the monster-side Regen does NOT decrement; two code paths, one
+        //                      PowerId).
+        //   CULTIST_POTION     player-side Ritual 1 — +1 Strength at every turn end, and
+        //                      unlike the monster-side Ritual it has NO skipFirst.
+        //   DUPLICATION_POTION 1 layer -> the next card played is queued a second time.
+        //
+        // ⚠ SLIME_BOSS is here on purpose and it is the only encounter that can do this job:
+        // Duplication has a copy of its `if` in ALL FOUR onUseXxxCard handlers, and the
+        // status/curse one is only reachable through Slimed — the one status card the policy
+        // is allowed to play (CardInstance.cpp:329's `id != SLIMED` exception). Same reasoning
+        // batch 42 used to pick slime_boss for Ink Bottle's fourth handler.
+        const std::vector<Potion> G4 {
+            Potion::REGEN_POTION, Potion::CULTIST_POTION, Potion::DUPLICATION_POTION,
+        };
+        add(7, 0, G4, PLAIN, {MonsterEncounter::HEXAGHOST, MonsterEncounter::SLIME_BOSS});
+        add(8, 0, G4, BARK,  {MonsterEncounter::SLIME_BOSS});
+
+        // ---- group 5: the three that rewrite the HAND ------------------------------------
+        //
+        //   BLESSING_OF_THE_FORGE  upgrade every card in hand (no bark ternary at all).
+        //   ELIXIR_POTION          ExhaustMany(10) — opens the multi-select screen, which the
+        //                          harness answers with min(pickCount, handSize) = the WHOLE
+        //                          hand. Also no bark ternary.
+        //   SNECKO_OIL             draw 5, then RandomizeHandCost — the only potion that
+        //                          rewrites `cost` itself rather than `costForTurn`.
+        //
+        // ⚠ Slot order is the drink order, and it matters here: Forge upgrades the hand, then
+        // Elixir empties it, then Snecko Oil draws a fresh five and re-prices them. All three
+        // stay observable precisely because Snecko Oil comes last.
+        // ⚠ Two of the three have NO `hasBark` ternary, so the B-side below only carries
+        // Snecko Oil's 10/5 — it is still worth its one file, that is the only bark branch of
+        // the three.
+        const std::vector<Potion> G5 {
+            Potion::BLESSING_OF_THE_FORGE, Potion::ELIXIR_POTION, Potion::SNECKO_OIL,
+        };
+        add(9,  0, G5, PLAIN, {MonsterEncounter::THREE_SENTRIES, MonsterEncounter::SLIME_BOSS});
+        add(10, 0, G5, BARK,  {MonsterEncounter::SLIME_BOSS});
+
+        // ---- group 6: Distilled Chaos, alone, because it eats the fight -------------------
+        //
+        // Three copies play 3 (bark: 6) draw-pile cards EACH on turn 0, i.e. 9 or 18 free
+        // cards before the first manual play. Measured effect on fight length: the average
+        // drops from ~7.2 to 4.38 turns, and gremlin_nob ends in 0.42 turns. That is the same
+        // "energyPerTurn++ starves everything else" lesson batch 43 learned about relics, so
+        // it gets its own variant instead of starving a turn-boundary Power.
+        //
+        // ⚠ It is the third member of the Havoc / Mayhem family: it plays the draw pile's top
+        // card through NO gate at all. The deck check above is what keeps that safe.
+        const std::vector<Potion> G6 { Potion::DISTILLED_CHAOS };
+        add(11, 0, G6, PLAIN, {MonsterEncounter::HEXAGHOST, MonsterEncounter::SLIME_BOSS});
+        add(12, 0, G6, BARK,  {MonsterEncounter::HEXAGHOST});
+
+        // ⚠⚠ THE POTIONS THAT ARE **NOT** REGISTERED, and why. 42 potions exist
+        // (Potions.h's enum minus INVALID / EMPTY_POTION_SLOT); 13 were already registered,
+        // 15 are above, and these 14 are out. Three of the reasons are new to this batch.
+        //
+        //   * CONJURES A CARD OUT OF THE WHOLE POOL -> the trace becomes unreplayable, exactly
+        //     the family batch 43 excluded Enchiridion / Dead Branch / Nilry's Codex for:
+        //     ATTACK_POTION / SKILL_POTION / POWER_POTION / COLORLESS_POTION (all four are
+        //     `Actions::DiscoveryAction`).
+        //     ⚠ Do NOT confuse this with Snecko Oil or Blessing of the Forge: rewriting an
+        //     EXISTING card's cost or upgrade bit is not conjuring (batch 44's criterion).
+        //   * MAKES A CARD THE REFERENCE NEVER IMPLEMENTED: BOTTLED_MIRACLE (MIRACLE) and
+        //     CUNNING_POTION (SHIV). Both card ids are in the same "no case in any of the three
+        //     switches" family as SEEK — no oracle can exist for them.
+        //   * NEEDS A STANCE (not modelled, and `changeStance` chains actions):
+        //     AMBROSIA, STANCE_POTION.
+        //   * ⚠⚠ THE ACTION IS A DEFAULT-CONSTRUCTED `Action`, i.e. an EMPTY std::function.
+        //     `BattleContext::executeActions` pops it and calls `a(*this)`
+        //     (BattleContext.cpp:766-767), which throws std::bad_function_call and takes the
+        //     whole generator down. This is a HARD exclusion, not a soft one — the same
+        //     category as THE_SPECIMEN wedging the battle:
+        //       ESSENCE_OF_DARKNESS  `Actions::EssenceOfDarkness` -> `return sts::Action();`
+        //       POTION_OF_CAPACITY   `Actions::IncreaseOrbSlots`  -> same
+        //       POISON_POTION        applies MS::POISON fine, but then
+        //                            `Monster::applyStartOfTurnPowers` (Monster.cpp:36-38)
+        //                            enqueues `Actions::PoisonLoseHpAction()` — also an empty
+        //                            Action — on that monster's NEXT turn. The crash is merely
+        //                            DEFERRED, which makes this one the most dangerous of the
+        //                            three to "just try".
+        //     ⚠ ESSENCE_OF_DARKNESS is now the engine repo's permanent "unregistered potion"
+        //     test sample, the potion-side counterpart of SEEK.
+        //   * THE CASE BODY IS `// todo` (BattleContext.cpp:2426-2428): SMOKE_BOMB. Registering
+        //     it would mean shipping "drinking it does nothing", which is what the REAL game
+        //     does not do (it ends the combat) — the Melange family: no oracle, never register.
+        //   * NO CASE AT ALL, falls into `default:` -> `assert(false)`: FAIRY_POTION. It is not
+        //     a drinkable potion in the reference either — `search::Action::isValidAction`
+        //     refuses it (Action.cpp:86) and it is consumed passively in `Player::wouldDie`.
+        //   * ⚠ GAMBLERS_BREW is excluded for a reason worth writing down separately:
+        //     `Actions::GambleAction` sets `inputState` and `cardSelectTask` but NEVER SETS
+        //     `pickCount` (Actions.cpp:987-992), and `isValidMultiCardSelectAction`'s GAMBLE
+        //     arm does not read it either (Action.cpp:211-219). So how many cards get
+        //     discarded is decided by whatever `pickCount` the PREVIOUS card-select screen
+        //     happened to leave behind. That is deterministic and therefore replayable, but it
+        //     is a reference defect, and registering a potion whose amount comes from stale
+        //     state is exactly the kind of thing this project must not do quietly. Reported,
+        //     not patched.
     }
 
     for (const auto &v : variants) {
