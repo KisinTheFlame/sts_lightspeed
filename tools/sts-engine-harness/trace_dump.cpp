@@ -3928,9 +3928,78 @@ int main() {
 
     std::vector<DeckVariant> act3AscVariants;
     {
-        // Filled in by step 2 of this batch. Adding the product with the list still empty is a
-        // no-op, and that is PROVED rather than assumed — see the emitProduct call at the
-        // bottom of main().
+        // ⚠⚠ THE VARIANTS ARE DERIVED FROM `act3Variants`, NOT RETYPED. Every act-3 asc-19
+        // variant is a COPY of its asc-0 counterpart with three fields changed: ascension,
+        // relics, potions. Deck contents, upgrade flag, seed count and encounter list are
+        // therefore identical BY CONSTRUCTION rather than by careful copying, which matters
+        // here more than usual:
+        //   * act 3 is the only product whose variants do NOT share one deck. Batches 32-36
+        //     used BATCH_1 + SPOT_WEAKNESS (22 cards), batch 37 needed a 45-card upgradeAll
+        //     deck to kill the Awakened One's first phase at all, and batches 38/39 needed a
+        //     59-card one (Havoc / Double Tap are the only producers of a non-empty card queue
+        //     inside onAfterUseCard, which Time Eater's TIME_WARP needs). Retyping three decks
+        //     to keep them "the same" is exactly the kind of thing that silently drifts.
+        //   * it makes the claim "the only difference from the asc-0 file is the ascension
+        //     level and the loadout" literally checkable instead of a comment.
+        // The disjointness rule carries over for free too: variants 32..36 share a fingerprint
+        // at asc 0 and name disjoint encounters, so their asc-19 copies do as well.
+        //
+        // ⚠ FINGERPRINT NOTE: the copy of variant 32 (BATCH_1 + SPOT_WEAKNESS, ascension 19)
+        // has the SAME fingerprint as variant 30 (the act-2 asc-19 variant, same deck). That is
+        // safe for the usual reason and only that reason — their encounter lists are disjoint
+        // (act 2 vs act 3), so no file ever holds rows from both.
+        //
+        // ---- why the loadout is pinned, and why to THESE ---------------------------------
+        //
+        // Pinning is not a preference, it is what the check above demands: `traceIdx` drives
+        // the relic rotation and the potion rotation and nothing else, so a variant that pins
+        // both is independent of its position in the product order. That is what lets the relic
+        // line and the potion line — both of which still append a variant every batch, and both
+        // of which are emitted BEFORE this product — keep growing without invalidating a single
+        // committed `<encounter>@asc19` act-3 file. It also lets THIS product grow later (a
+        // second ascension level is a plain append).
+        //
+        // ⚠ THE PRICE, STATED PLAINLY: these files are NOT relic/potion-comparable with their
+        // asc-0 counterparts, which got two rotating relics and three rotating potions. That is
+        // a deliberate trade — comparability on one axis in exchange for order-independence on
+        // the product order — and it costs nothing here, because what this batch is buying is
+        // the MONSTER side (hp tiers, ascAmount, minAscension, preBattleAction tiers), and
+        // every one of those is measured against the same file, not against the asc-0 file.
+        //
+        //   VAJRA — the inert pin, exactly as in the potion product. Its whole implementation
+        //     is `player.buff<PS::STRENGTH>(1)` inside initRelics and there is not one further
+        //     call site anywhere in src/combat, so nothing observed in these 15 files can be
+        //     attributed to a relic's combat behaviour. Deliberately NOT Bronze Scales / Blood
+        //     Vial / Anchor: each of those has a combat hook, and this batch is about the
+        //     monsters' ascension tiers, not about a second variable.
+        //   BLOCK_POTION + STRENGTH_POTION — both are pure player-side, and between them they
+        //     buy back exactly the two things ascension 19 takes away: survivability (asc>=6
+        //     enters at 90% HP, asc>=14 drops Ironclad maxHp to 75, asc>=10 adds an
+        //     ASCENDERS_BANE) and kill speed (every monster gains HP and damage). Both matter
+        //     for coverage: act 3's late-turn branches (Giant Head's IT_IS_TIME at monster turn
+        //     >= 5, The Maw's turn-scaled NOM, Transient's 6-stack FADING) need the player to
+        //     survive, and its half-HP branches (Time Eater's HASTE, the Awakened One's
+        //     rebirth, whose `maxHp = asc9 ? 320 : 300` is an asc tier of its own) need the
+        //     player to deal damage.
+        //     ⚠ Deliberately NOT Fire / Explosive Potion: those go through `Monster::damage`,
+        //     i.e. they would put a second writer on the very code path several act-3 monsters
+        //     are measured on. And deliberately NOT Entropic Brew: it refills the slots from
+        //     the whole pool, which is the opposite of pinning.
+        //   ⚠ `potionCapacity` is 2 at asc >= 11 (GameContext.cpp:66), so these two fill
+        //     exactly one slot each — the `i % size` cycling never repeats one of them.
+        //   ⚠ potionSet stays 0 (the file-name suffix here is `@asc19`), so isReplayablePotion
+        //     runs on the NARROW frozen 13; both of these are in it. The check above asserts
+        //     that rather than trusting this comment.
+        const std::vector<RelicSpec> PINNED_RELICS {{RelicId::VAJRA, "vajra"}};
+        const std::vector<Potion> PINNED_POTIONS {Potion::BLOCK_POTION, Potion::STRENGTH_POTION};
+
+        for (const auto &v : act3Variants) {
+            DeckVariant asc = v;
+            asc.ascension = 19;
+            asc.relics = PINNED_RELICS;
+            asc.potions = PINNED_POTIONS;
+            act3AscVariants.push_back(std::move(asc));
+        }
     }
 
     for (const auto &v : variants) {
