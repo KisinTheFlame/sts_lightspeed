@@ -3913,6 +3913,26 @@ int main() {
         //     not patched.
     }
 
+    // ============== act-3 ascension axis (batch 46), the SEVENTH product ==================
+    //
+    // Act 1 and act 2 have had {asc 0, asc 19} since batches 21/22 and 30. Act 3 has only had
+    // asc 0, and the engine repo's `EnemyDef.ascCalibrated` gate is unset on all 17 of its
+    // monsters, so `constructMonster` still throws for ascension > 0. This product closes that
+    // — the single largest structural hole in the corpus.
+    //
+    // Same encounter list as the act-3 product, verbatim: this axis is exactly "the act-3
+    // encounters again, one level up". ⚠ JAW_WORM_HORDE is act 3's sixteenth encounter but has
+    // lived in the act-1 product since the first commit, so `jaw_worm_horde@asc19` was already
+    // produced by variant 21 back in batch 21 — naming it here would collide.
+    std::vector<std::pair<MonsterEncounter, const char *>> act3AscEncounters = act3Encounters;
+
+    std::vector<DeckVariant> act3AscVariants;
+    {
+        // Filled in by step 2 of this batch. Adding the product with the list still empty is a
+        // no-op, and that is PROVED rather than assumed — see the emitProduct call at the
+        // bottom of main().
+    }
+
     for (const auto &v : variants) {
         // 10 starter cards are added by the GameContext constructor.
         if (static_cast<int>(v.extra.size()) + 10 > Deck::MAX_SIZE) {
@@ -4043,6 +4063,57 @@ int main() {
         if (std::adjacent_find(sets.begin(), sets.end()) != sets.end()) {
             std::cerr << "two potion variants share a potionSet number" << std::endl;
             return 1;
+        }
+    }
+    for (const auto &v : act3AscVariants) {
+        if (static_cast<int>(v.extra.size()) + 10 > Deck::MAX_SIZE) {
+            std::cerr << "act3-asc deck variant exceeds Deck::MAX_SIZE (" << Deck::MAX_SIZE
+                      << "): " << (v.extra.size() + 10) << " cards" << std::endl;
+            return 1;
+        }
+        if (v.relics.size() > 8) {
+            std::cerr << "act3-asc variant names more than 8 relics" << std::endl;
+            return 1;
+        }
+        // The whole point of the product: a zero here would emit `<encounter>.jsonl`, i.e. it
+        // would try to overwrite a FROZEN act-3 file instead of creating `<encounter>@asc19`.
+        if (v.ascension == 0) {
+            std::cerr << "act3-asc variant must carry a non-zero ascension (it is the file-name "
+                         "suffix AND the fingerprint dimension)" << std::endl;
+            return 1;
+        }
+        // ⚠⚠ SAME INVARIANT AS THE POTION PRODUCT, and for the same reason. `traceIdx` drives
+        // exactly two things — the relic rotation and the potion rotation — so a variant that
+        // pins BOTH emits traces that do not depend on where it sits in the product order at
+        // all. That is what lets the relic line (`relicVariants`, still growing) and the potion
+        // line (`potionVariants`, still growing) both sit AHEAD of this product without ever
+        // invalidating a committed `@asc19` act-3 file, and it lets THIS product keep growing
+        // too (a second ascension level is a plain append). Batch 31's rule was "the new axis
+        // must be last"; batch 45 replaced it with this check, which is strictly better because
+        // it is order-independent in both directions.
+        if (v.relics.empty() || v.potions.empty()) {
+            std::cerr << "act3-asc variant must pin BOTH its relics and its potions, otherwise "
+                         "it reads traceIdx and the next relic/potion batch invalidates its "
+                         "files" << std::endl;
+            return 1;
+        }
+        for (const auto &rs : v.relics) {
+            if (!relicDataIsNumeric(rs.id) && rs.data == 0) {
+                std::cerr << "act3-asc variant hands out " << rs.name << " with data 0"
+                          << std::endl;
+                return 1;
+            }
+        }
+        // potionSet stays 0 here (the file-name suffix is `@asc19`, not `@potN`), so
+        // isReplayablePotion runs on the NARROW list — pinning anything outside the frozen 13
+        // would make the trace unreplayable rather than merely unverified. Check it rather
+        // than trusting the comment next to the list.
+        for (auto p : v.potions) {
+            if (!isReplayablePotion(p, v.potionSet != 0)) {
+                std::cerr << "act3-asc variant pins a potion the replayer does not know"
+                          << std::endl;
+                return 1;
+            }
         }
     }
 
@@ -4354,6 +4425,13 @@ int main() {
     // the check above), so it reads no traceIdx and appending to the relic product ahead of it
     // stays free. That check is what buys the relic line the right to keep growing.
     emitProduct(potionVariants, potionEncounters);
+    // ⚠ Batch 46. Like the potion product above, this one does NOT freeze anything ahead of it:
+    // every variant in it is required to pin both its relics and its potions (see the check
+    // above), so it reads no traceIdx and its position in the product order is irrelevant.
+    // Adding this call with `act3AscVariants` still empty is a no-op, and that was proved
+    // rather than assumed: tools/regen-traces.sh --check reproduced all 182 committed files
+    // byte-for-byte before the first act-3 ascension variant was filled in.
+    emitProduct(act3AscVariants, act3AscEncounters);
 
     std::cout << "]}" << std::endl;
     return 0;
