@@ -4139,8 +4139,109 @@ int main() {
 
     std::vector<DeckVariant> act4Variants;
     {
-        // filled in by batch 47b below; declared empty first so the product call can be added
-        // and proved to be a no-op against the committed corpus.
+        // Same inert pins as batches 46/47a, for the same reason: VAJRA's whole combat
+        // implementation is one `player.buff<PS::STRENGTH>(1)` in initRelics with no second
+        // call site in src/combat, and both potions are pure player-side. ⚠ Deliberately NOT
+        // Fire / Explosive Potion — they go through Monster::damage, and CORRUPT_HEART's
+        // INVINCIBLE sits at the head of BOTH unblocked-damage helpers, i.e. exactly the code
+        // path being measured here.
+        const std::vector<RelicSpec> PINNED_RELICS {{RelicId::VAJRA, "vajra"}};
+        const std::vector<Potion> PINNED_POTIONS {Potion::BLOCK_POTION, Potion::STRENGTH_POTION};
+
+        // Variant 47b-1: SHIELD_AND_SPEAR + MASKED_BANDITS_EVENT, on batch 37's 45-card
+        // upgradeAll deck (rebuilt here rather than referenced — batch37Deck is scoped to the
+        // act-3 block). Both are ordinary multi-monster fights, so all a deck has to buy is
+        // "long enough that the third move in each chain comes up". Measured, 120 traces each:
+        //
+        //   deck                          SHIELD_AND_SPEAR avg/max turns   SMASH exec  SKEWER exec
+        //   BATCH_1 + SPOT_WEAKNESS (22)          2.50 / 4                     120         132
+        //   ✅ this deck (45, upgraded)           4.14 / 9                     127         224
+        //   batch 38's deck (59, upgraded)        4.65 / 10                    112         222
+        //
+        //   deck                          MASKED_BANDITS avg/max turns   POINTY exec  CROSS_SLASH exec
+        //   BATCH_1 + SPOT_WEAKNESS (22)          4.47 / 6                      80          72
+        //   ✅ this deck (45, upgraded)           3.88 / 7                     130          68
+        //   batch 38's deck (59, upgraded)        3.05 / 6                      88          32
+        //
+        // All three execute all six SPIRE moves and all five bandit moves; the 45-card one is
+        // the only one that is not last on any column.
+        //
+        // ⚠ THE FOUR SPOT_WEAKNESS COPIES ARE LOAD-BEARING, not incidental: Monster::
+        // isAttacking() -> isMoveAttack is read by nothing else in the whole reference, so
+        // without one in the deck the whitelist entries for the five new monsters would have
+        // no oracle at all. Standing rule since batch 24.
+        //
+        // ⚠ FINGERPRINT: this deck is byte-identical to variant 37's, at the same ascension /
+        // target policy / relicSet / potionSet, so the two share a fingerprint. Safe for the
+        // usual and only reason — variant 37 names AWAKENED_ONE and nothing else, so no file
+        // ever holds rows from both.
+        std::vector<CardId> spireDeck = BATCH_1;
+        spireDeck.push_back(CardId::SPOT_WEAKNESS);
+        for (CardId c : {CardId::SPOT_WEAKNESS, CardId::SPOT_WEAKNESS, CardId::SPOT_WEAKNESS,
+                         CardId::LIMIT_BREAK, CardId::LIMIT_BREAK,
+                         CardId::SWORD_BOOMERANG, CardId::SWORD_BOOMERANG,
+                         CardId::GHOSTLY_ARMOR, CardId::GHOSTLY_ARMOR,
+                         CardId::GHOSTLY_ARMOR, CardId::GHOSTLY_ARMOR,
+                         CardId::GOOD_INSTINCTS, CardId::GOOD_INSTINCTS,
+                         CardId::IMPERVIOUS, CardId::IMPERVIOUS,
+                         CardId::IMPERVIOUS, CardId::IMPERVIOUS,
+                         CardId::REAPER, CardId::REAPER,
+                         CardId::FINESSE, CardId::FINESSE,
+                         CardId::FLASH_OF_STEEL, CardId::FLASH_OF_STEEL}) {
+            spireDeck.push_back(c);
+        }
+        const std::vector<MonsterEncounter> spireAndBandits {
+            MonsterEncounter::SHIELD_AND_SPEAR,
+            MonsterEncounter::MASKED_BANDITS_EVENT,
+        };
+        act4Variants.push_back({spireDeck, 40, true, spireAndBandits, 0, 0,
+                                PINNED_RELICS, PINNED_POTIONS});
+
+        // Variant 47b-2: THE_HEART, on a deck built BACKWARDS from every other one in this
+        // file — "measure before deciding" for the tenth time, and the first time the answer
+        // was A DELIBERATELY WEAKER DECK.
+        //
+        // The Corrupt Heart has 750 HP and INVINCIBLE 300, i.e. it cannot lose more than 300
+        // HP in a turn no matter what, so a strong deck kills it in exactly three turns. But
+        // CORRUPT_HEART_BUFF's payload is chosen by `buffCount = getMonsterTurnNumber() / 3`
+        // (MonsterSpecific.cpp:1843-1859) — ARTIFACT at turn 3, BEAT_OF_DEATH at 6,
+        // PAINFUL_STABS at 9, +10 STRENGTH at 12, +50 after that. Killing it fast and dying
+        // fast BOTH cap the monster turn count, so this encounter wants a deck that SURVIVES
+        // WITHOUT DEALING DAMAGE. Measured over the same 120 traces (tiers = how many of the
+        // 120 ever saw that buff land):
+        //
+        //   deck                                 avg turns  max  tier1  tier2  tier3  min INVINCIBLE
+        //   BATCH_1 + SPOT_WEAKNESS (22)            2.17     4      9      0      0        247
+        //   batch 37's deck (45, upgraded)          3.24     7     58      6      0        137
+        //   batch 38's deck (59, upgraded)          3.12     6     59      0      0         14
+        //   tank, 32 cards                          5.38    10    112     42      1        276
+        //   tank, 32 cards (10x Impervious)         5.43     8    112     45      0        273
+        //   ✅ this deck (38 cards + 2 Spot Weakness) 6.09  11    110     65      8        280
+        //
+        // ⚠ THE PRICE, STATED PLAINLY: the 59-card deck is the only one that drives INVINCIBLE
+        // anywhere near 0 (14 of 300) — and even it never reaches 0, so
+        // `damage = std::min(damage, getStatus<INVINCIBLE>())` never actually CLAMPS under ANY
+        // candidate. The clamp is a blind spot either way; the per-hit SUBTRACTION and the
+        // per-turn RESET are observable under all of them. Trading 14 -> 280 therefore costs
+        // nothing that was on the table, and buys tiers 2 and 3 of the buff switch.
+        //
+        // ⚠ NO player victory under any candidate (0 of 120 everywhere) — 750 HP behind a
+        // 300/turn cap is simply out of reach for a replayable Ironclad deck. Every trace here
+        // ends in the player's death, which is fine for an oracle but worth stating.
+        //
+        // ⚠ Two Spot Weaknesses, for the isMoveAttack oracle again. Two and not four because
+        // each copy is +3 STRENGTH on a five-Strike deck — it is the one card in here that
+        // shortens the fight.
+        std::vector<CardId> heartDeck;
+        for (int i = 0; i < 10; ++i) heartDeck.push_back(CardId::IMPERVIOUS);
+        for (int i = 0; i < 8; ++i) heartDeck.push_back(CardId::GHOSTLY_ARMOR);
+        for (int i = 0; i < 4; ++i) heartDeck.push_back(CardId::SHRUG_IT_OFF);
+        for (int i = 0; i < 4; ++i) heartDeck.push_back(CardId::BANDAGE_UP);
+        for (int i = 0; i < 2; ++i) heartDeck.push_back(CardId::METALLICIZE);
+        for (int i = 0; i < 2; ++i) heartDeck.push_back(CardId::SPOT_WEAKNESS);
+        const std::vector<MonsterEncounter> heartOnly {MonsterEncounter::THE_HEART};
+        act4Variants.push_back({heartDeck, 40, true, heartOnly, 0, 0,
+                                PINNED_RELICS, PINNED_POTIONS});
     }
 
     for (const auto &v : variants) {
