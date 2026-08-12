@@ -4002,6 +4002,47 @@ int main() {
         }
     }
 
+    // ============ act-3 target-policy axis (batch 47a), the EIGHTH product ================
+    //
+    // Batch 31 opened the target-policy axis (`@tgt1` = the strategy attacks
+    // `lastAliveMonster`, the HIGHEST live index, instead of `firstAliveMonster`) and covered
+    // 23 multi-monster encounters across acts 1 and 2. Act 3 got none of them, and that has
+    // been the act's only remaining structural hole since batch 46 filled in ascension.
+    //
+    // Same encounter list as the act-3 product, verbatim, for the same reason batch 46 reused
+    // it: an encounter no variant names is `continue`d before the seed loop and consumes no
+    // traceIdx, so listing all fifteen is free. ⚠ JAW_WORM_HORDE is act 3's sixteenth
+    // encounter but has lived in the act-1 product since the first commit, and batch 31
+    // already emitted `jaw_worm_horde@tgt1` from there — naming it here would collide.
+    std::vector<std::pair<MonsterEncounter, const char *>> act3TgtEncounters = act3Encounters;
+
+    std::vector<DeckVariant> act3TgtVariants;
+    {
+        // filled in by batch 47a below; declared empty first so the product call can be added
+        // and proved to be a no-op against the committed corpus.
+    }
+
+    // ================= act 4 + event encounters (batch 47b), the NINTH product =============
+    //
+    // The last three unregistered encounters that have monsters nobody has transcribed yet:
+    // SHIELD_AND_SPEAR and THE_HEART (act 4) and MASKED_BANDITS_EVENT. Between them they
+    // introduce the final six monsters in `MOVE_RULES`' 65.
+    //
+    // A product of its own rather than a variant on an existing one for the usual reason
+    // (traceIdx), and — like the potion and act-3-ascension products — every variant in it
+    // pins both relics and potions, so it neither freezes nor is frozen by anything.
+    const std::vector<std::pair<MonsterEncounter, const char *>> act4Encounters {
+        {MonsterEncounter::SHIELD_AND_SPEAR,     "SHIELD_AND_SPEAR"},
+        {MonsterEncounter::THE_HEART,            "THE_HEART"},
+        {MonsterEncounter::MASKED_BANDITS_EVENT, "MASKED_BANDITS_EVENT"},
+    };
+
+    std::vector<DeckVariant> act4Variants;
+    {
+        // filled in by batch 47b below; declared empty first so the product call can be added
+        // and proved to be a no-op against the committed corpus.
+    }
+
     for (const auto &v : variants) {
         // 10 starter cards are added by the GameContext constructor.
         if (static_cast<int>(v.extra.size()) + 10 > Deck::MAX_SIZE) {
@@ -4181,6 +4222,103 @@ int main() {
             if (!isReplayablePotion(p, v.potionSet != 0)) {
                 std::cerr << "act3-asc variant pins a potion the replayer does not know"
                           << std::endl;
+                return 1;
+            }
+        }
+    }
+    for (const auto &v : act3TgtVariants) {
+        if (static_cast<int>(v.extra.size()) + 10 > Deck::MAX_SIZE) {
+            std::cerr << "act3-tgt deck variant exceeds Deck::MAX_SIZE (" << Deck::MAX_SIZE
+                      << "): " << (v.extra.size() + 10) << " cards" << std::endl;
+            return 1;
+        }
+        if (v.relics.size() > 8) {
+            std::cerr << "act3-tgt variant names more than 8 relics" << std::endl;
+            return 1;
+        }
+        // The point of the product: a zero here would emit `<encounter>.jsonl` (or
+        // `<encounter>@asc19.jsonl`), i.e. it would overwrite a FROZEN act-3 file instead of
+        // creating a new `@tgt1` one.
+        if (v.targetPolicy == 0) {
+            std::cerr << "act3-tgt variant must carry a non-zero targetPolicy (it is the "
+                         "file-name suffix AND the fingerprint dimension)" << std::endl;
+            return 1;
+        }
+        // Same invariant as the potion / act-3-ascension products. `traceIdx` drives exactly
+        // two things — the relic rotation and the potion rotation — so a variant that pins
+        // BOTH emits traces independent of where it sits in the product order. That is what
+        // lets the relic and potion lines keep appending ahead of this product.
+        if (v.relics.empty() || v.potions.empty()) {
+            std::cerr << "act3-tgt variant must pin BOTH its relics and its potions" << std::endl;
+            return 1;
+        }
+        for (const auto &rs : v.relics) {
+            if (!relicDataIsNumeric(rs.id) && rs.data == 0) {
+                std::cerr << "act3-tgt variant hands out " << rs.name << " with data 0"
+                          << std::endl;
+                return 1;
+            }
+        }
+        for (auto p : v.potions) {
+            if (!isReplayablePotion(p, v.potionSet != 0)) {
+                std::cerr << "act3-tgt variant pins a potion the replayer does not know"
+                          << std::endl;
+                return 1;
+            }
+        }
+        // ⚠ THE WHOLE POINT OF THE AXIS: with exactly one monster on the field
+        // lastAliveMonster and firstAliveMonster return the same index, so a single-monster
+        // encounter would emit a trace byte-identical to the committed asc-0 one. That is pure
+        // volume for zero information, and the eight act-3 single-monster encounters are
+        // therefore rejected here rather than merely left out of a comment.
+        for (auto enc : v.encounters) {
+            switch (enc) {
+                case MonsterEncounter::THREE_SHAPES:
+                case MonsterEncounter::FOUR_SHAPES:
+                case MonsterEncounter::SPHERE_AND_TWO_SHAPES:
+                case MonsterEncounter::THREE_DARKLINGS:
+                case MonsterEncounter::REPTOMANCER:
+                case MonsterEncounter::AWAKENED_ONE:
+                case MonsterEncounter::DONU_AND_DECA:
+                    break;
+                default:
+                    std::cerr << "act3-tgt variant names an act-3 encounter that can never have "
+                                 "two targetable monsters at once; the two policies would emit "
+                                 "identical traces" << std::endl;
+                    return 1;
+            }
+        }
+    }
+    for (const auto &v : act4Variants) {
+        if (static_cast<int>(v.extra.size()) + 10 > Deck::MAX_SIZE) {
+            std::cerr << "act4 deck variant exceeds Deck::MAX_SIZE (" << Deck::MAX_SIZE
+                      << "): " << (v.extra.size() + 10) << " cards" << std::endl;
+            return 1;
+        }
+        if (v.relics.size() > 8) {
+            std::cerr << "act4 variant names more than 8 relics" << std::endl;
+            return 1;
+        }
+        if (v.relics.empty() || v.potions.empty()) {
+            std::cerr << "act4 variant must pin BOTH its relics and its potions" << std::endl;
+            return 1;
+        }
+        for (const auto &rs : v.relics) {
+            if (!relicDataIsNumeric(rs.id) && rs.data == 0) {
+                std::cerr << "act4 variant hands out " << rs.name << " with data 0" << std::endl;
+                return 1;
+            }
+        }
+        for (auto p : v.potions) {
+            if (!isReplayablePotion(p, v.potionSet != 0)) {
+                std::cerr << "act4 variant pins a potion the replayer does not know" << std::endl;
+                return 1;
+            }
+        }
+        for (auto cid : v.extra) {
+            if (!isReplayableCard(cid) || isPoolConjuringCard(cid)) {
+                std::cerr << "act4 variant deck holds a card Havoc must not be able to auto-play: "
+                          << getCardEnumName(cid) << std::endl;
                 return 1;
             }
         }
@@ -4501,6 +4639,14 @@ int main() {
     // rather than assumed: tools/regen-traces.sh --check reproduced all 182 committed files
     // byte-for-byte before the first act-3 ascension variant was filled in.
     emitProduct(act3AscVariants, act3AscEncounters);
+    // ⚠ Batch 47a. Same deal as the two products above: every variant pins both relics and
+    // potions, so it reads no traceIdx and freezes nothing ahead of it. Adding this call with
+    // `act3TgtVariants` still empty is a no-op, and that was proved rather than assumed:
+    // tools/regen-traces.sh --check reproduced all 197 committed files byte-for-byte before the
+    // first act-3 target-policy variant was filled in.
+    emitProduct(act3TgtVariants, act3TgtEncounters);
+    // ⚠ Batch 47b, same reasoning, same proof run.
+    emitProduct(act4Variants, act4Encounters);
 
     std::cout << "]}" << std::endl;
     return 0;
