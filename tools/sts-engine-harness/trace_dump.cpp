@@ -4018,8 +4018,108 @@ int main() {
 
     std::vector<DeckVariant> act3TgtVariants;
     {
-        // filled in by batch 47a below; declared empty first so the product call can be added
-        // and proved to be a no-op against the committed corpus.
+        // ⚠⚠ WHICH ACT-3 ENCOUNTERS QUALIFY, AND HOW THAT WAS DECIDED.
+        //
+        // The criterion is batch 31's, verbatim: "CAN EVER HAVE TWO TARGETABLE MONSTERS AT
+        // ONCE", NOT "starts with two". lastAliveMonster and firstAliveMonster share the same
+        // predicate (isDeadOrEscaped) and the same fallback (return 0), so with one monster on
+        // the field they return the same index and the trace would be a byte-identical copy of
+        // the committed asc-0 one.
+        //
+        // Reading MonsterGroup::createMonsters (MonsterGroup.cpp) for all fifteen:
+        //   ✅ THREE_SHAPES           createShapes(bc, 3)                       — 3 up front
+        //   ✅ FOUR_SHAPES           createShapes(bc, 4)                       — 4 up front
+        //   ✅ SPHERE_AND_TWO_SHAPES getAncientShape x2 + SPHERIC_GUARDIAN     — 3 up front
+        //   ✅ THREE_DARKLINGS       DARKLING x3                               — 3 up front
+        //   ✅ REPTOMANCER           DAGGER / REPTOMANCER / DAGGER in slots
+        //                            1 / 2 / 4 (two reserved holes) + summons  — 3 up front
+        //   ✅ AWAKENED_ONE          CULTIST, CULTIST, AWAKENED_ONE            — 3 up front
+        //   ✅ DONU_AND_DECA         DECA (slot 0), DONU (slot 1)              — 2 up front
+        //   ✗ ORB_WALKER / SPIRE_GROWTH / TRANSIENT / MAW / WRITHING_MASS / GIANT_HEAD /
+        //     NEMESIS / TIME_EATER — one createMonster each, and none of the eight ever adds a
+        //     second body: grep of Monster::onHpLost (Monster.cpp:499-535, the complete list of
+        //     mid-fight slot writers: the three large-slime splits and the Guardian's mode
+        //     shift) and of the four summon hosts (Gremlin Leader / Bronze Automaton /
+        //     Collector / Reptomancer, the complete list per the 13-dimension table in
+        //     WORKFLOW) turns up none of them. Act 3's mid-fight body changes are all
+        //     SUBTRACTIVE (Transient's FADING suicide, the Exploder's self-detonation) or
+        //     in-place (the Awakened One's half-death, the Darklings' regrow) — the act has
+        //     no split, and its only summoner is the Reptomancer, which is already in.
+        //
+        // So seven of fifteen. The harness enforces the list rather than trusting this comment
+        // (see the switch in the act3-tgt check above).
+        //
+        // ⚠⚠ THE VARIANTS ARE DERIVED FROM `act3Variants`, NOT RETYPED — same reason as batch
+        // 46's ascension copies: act 3 is the only product whose variants do not share one deck
+        // (22 cards for batches 32-36, 45 upgradeAll for batch 37, 59 upgradeAll for 38/39), so
+        // "the only difference from the asc-0 file is the target policy and the loadout" is a
+        // property by construction instead of a promise in a comment. A variant whose encounter
+        // list has no multi-monster entry left (batches 33, 35, 38) drops out entirely.
+        //
+        // ---- the three acceptance targets ------------------------------------------------
+        //   DONU_AND_DECA — Deca sits at slot 0 and Donu at slot 1, and Deca's SQUARE_OF_
+        //     PROTECTION blocks/plates `arr[1]` with NO ALIVE GATE AT ALL (the reference even
+        //     comments as much on Donu's mirror-image move). Under policy 0 the player always
+        //     kills Deca first, so "Donu is already dead when Deca casts it" happened 0/120
+        //     times at asc 0 and 0/120 at asc 19 (batch 46 re-measured it) — this axis is the
+        //     stated closing condition for that blind spot in the engine repo's TODOS.
+        //   REPTOMANCER — MINION_LEADER's second victory path (Monster::die :293-297, "the
+        //     leader dies, the minions are still standing, the player still wins"). Policy 1
+        //     targets slot 4 (a dagger), then slot 2 (the Reptomancer itself) while the slot-1
+        //     dagger lives.
+        //   AWAKENED_ONE — the same path on the other host. It sits at slot 2 behind two
+        //     Cultists, so policy 1 attacks the boss directly and the cultists survive it.
+        const std::vector<MonsterEncounter> MULTI {
+            MonsterEncounter::THREE_SHAPES,
+            MonsterEncounter::FOUR_SHAPES,
+            MonsterEncounter::SPHERE_AND_TWO_SHAPES,
+            MonsterEncounter::THREE_DARKLINGS,
+            MonsterEncounter::REPTOMANCER,
+            MonsterEncounter::AWAKENED_ONE,
+            MonsterEncounter::DONU_AND_DECA,
+        };
+        // Same pins as batch 46, and for the same reasons: VAJRA is the inert relic (its whole
+        // combat implementation is one `player.buff<PS::STRENGTH>(1)` in initRelics and there is
+        // no second call site in src/combat), and the two potions are pure player-side. Both
+        // buy kill speed, which is exactly what all three acceptance targets need — every one
+        // of them is "the player finishes off the monster at the HIGH index before its
+        // neighbour dies".
+        const std::vector<RelicSpec> PINNED_RELICS {{RelicId::VAJRA, "vajra"}};
+        const std::vector<Potion> PINNED_POTIONS {Potion::BLOCK_POTION, Potion::STRENGTH_POTION};
+
+        for (const auto &v : act3Variants) {
+            DeckVariant tgt = v;
+            tgt.encounters.clear();
+            for (auto enc : v.encounters) {
+                if (std::find(MULTI.begin(), MULTI.end(), enc) != MULTI.end()) {
+                    tgt.encounters.push_back(enc);
+                }
+            }
+            if (tgt.encounters.empty()) {
+                continue;
+            }
+            tgt.targetPolicy = 1;
+            tgt.relics = PINNED_RELICS;
+            tgt.potions = PINNED_POTIONS;
+            act3TgtVariants.push_back(std::move(tgt));
+        }
+
+        // ⚠ ONE COMBINED-AXIS VARIANT: `donu_and_deca@asc19@tgt1`. The plated-armour half of
+        // Deca's SQUARE_OF_PROTECTION only exists at asc >= 19 (batch 46 shipped it), so its
+        // missing alive-gate cannot be observed by an asc-0 policy-1 file — it needs BOTH axes
+        // at once. The group key machinery has carried the `[@ascN][@tgtN]` order since batch
+        // 31 precisely so this could be added later without renaming anything; this is the
+        // first file to use two suffixes. Derived from the batch-46 asc-19 copy so the deck and
+        // pins stay identical by construction.
+        for (const auto &v : act3AscVariants) {
+            if (std::find(v.encounters.begin(), v.encounters.end(),
+                          MonsterEncounter::DONU_AND_DECA) == v.encounters.end()) {
+                continue;
+            }
+            DeckVariant both = v;
+            both.targetPolicy = 1;
+            act3TgtVariants.push_back(std::move(both));
+        }
     }
 
     // ================= act 4 + event encounters (batch 47b), the NINTH product =============
