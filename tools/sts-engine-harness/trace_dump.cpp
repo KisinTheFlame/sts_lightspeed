@@ -742,6 +742,47 @@ int main() {
         // 0 = drink everything on turn 1 at full health (historical), 1 = only once the player
         // is bloodied. See mayDrinkNow above for what each one is for.
         int potionPolicy = 0;
+
+        // ---- room type (batch 50) --------------------------------------------------------
+        //
+        // DEFAULTS TO Room::INVALID, which is exactly what gc.curRoom / gc.lastRoom have held
+        // in every trace ever committed (this harness never assigned either), so every variant
+        // declared before these fields existed keeps emitting byte-identical traces — the same
+        // trick as `ascension`, `targetPolicy`, `playerHp`, `deckUpgraded`, `halfDead`.
+        //
+        // Why the axis exists: FIVE relics are gated on the room and were screened out in batch
+        // 43 for precisely this reason (PANTOGRAPH BOSS, PRESERVED_INSECT ELITE, SLAVERS_COLLAR
+        // ELITE|BOSS, SLING_OF_COURAGE ELITE, ANCIENT_TEA_SET lastRoom == REST). That entry
+        // named this field as the closing condition; this is it.
+        //
+        // ⚠ `room` and `lastRoom` are TWO DIFFERENT SOURCES in the reference: `room` is the
+        // local `auto room = gc.curRoom;` at BattleContext.cpp:88, while ANCIENT_TEA_SET reads
+        // `gc.lastRoom` directly. Merging them would make the tea set share the other four's
+        // value.
+        Room room = Room::INVALID;
+        Room lastRoom = Room::INVALID;
+
+        // Entry HP override (batch 50). 0 = leave whatever GameContext::initPlayer set, which
+        // is what every committed variant did, so old traces stay byte-identical.
+        //
+        // Why it exists: PANTOGRAPH's whole body is `p.heal(25)`, and heal is clamped at maxHp,
+        // so AT FULL HEALTH THE RELIC IS A NO-OP AND ITS BOSS GATE HAS NO OBSERVABLE SURFACE.
+        // The only other way to enter damaged is ascension >= 6 (GameContext.cpp:522), and that
+        // would drag the ascension axis into a relic variant — whose encounters would then need
+        // asc calibration on our side. One field is much cheaper than that entanglement.
+        int playerHpValue = 0;
+    };
+
+    // Room -> the string the trace header carries. Only the values the reference actually reads
+    // inside src/combat get a name; anything else would be an unverifiable claim.
+    const auto roomName = [](Room r) -> const char * {
+        switch (r) {
+            case Room::MONSTER: return "monster";
+            case Room::ELITE:   return "elite";
+            case Room::BOSS:    return "boss";
+            case Room::REST:    return "rest";
+            default:            return "invalid";
+        }
     };
 
     // Batch 1 (already registered, verified by the committed variant-0 traces).
@@ -3725,6 +3766,77 @@ int main() {
                                  {{RelicId::GIRYA, "girya", 2}},
                                  pinnedPotions, 19});
 
+        // ---- relic sets 20 / 21 / 22: the five ROOM-GATED relics ---------------------------
+        //
+        //   PRESERVED_INSECT  :316-322  room == ELITE        -> every monster to 75% HP
+        //   SLING_OF_COURAGE  :340-344  room == ELITE        -> buff<STRENGTH>(2)
+        //   SLAVERS_COLLAR    :334-338  room == ELITE||BOSS  -> energyPerTurn++
+        //   PANTOGRAPH        :310-314  room == BOSS         -> heal(25)
+        //   ANCIENT_TEA_SET   :230-234  gc.lastRoom == REST  -> gainEnergy(2)
+        //
+        // Batch 43 screened all five out with one shared reason — "reads gc.curRoom /
+        // gc.lastRoom, which this harness never sets (both stay Room::INVALID), so the branch
+        // is structurally unreachable" — and named the closing condition: a Room field on
+        // DeckVariant. This is that batch.
+        //
+        // ⚠⚠ THREE VARIANTS, AND THE SPLIT IS THE POINT. Slaver's Collar's gate is a
+        //   DISJUNCTION (ELITE || BOSS) while Sling of Courage's is ELITE alone and
+        //   Pantograph's is BOSS alone. One variant would light up only one side of the
+        //   disjunction, and "wrote `||` as a single comparison" would be half-unobservable.
+        //   @relic20 is ELITE, @relic21 is BOSS, and the collar rides BOTH — so its two
+        //   arms have separate evidence, and its two neighbours prove they did NOT fire in
+        //   the other room.
+        //
+        // ⚠ @relic21 enters at 60/80 HP on purpose: `heal` clamps, so a full-health Pantograph
+        //   is a no-op no matter how correctly it is transcribed (see playerHpValue above).
+        //
+        // ⚠ @relic22 sets ONLY lastRoom, leaving room at INVALID. That is what makes the tea
+        //   set's source observable: reading `room` instead of `gc.lastRoom` yields no energy
+        //   at all in this file.
+        //
+        // ⚠ PRESERVED_INSECT's loop is a bare `i < monsterCount` with NO filter — the
+        //   Philosopher's Stone family. It is NOT observable on the reserved-slot encounters
+        //   though, and that was checked rather than assumed: an empty slot has maxHp 0, so
+        //   `curHp = maxHp * .75` writes 0 over 0. THREE_SENTRIES is here for the monster
+        //   COUNT (three separate 75% reads in one trace), not for the missing filter.
+        const std::vector<MonsterEncounter> eliteRooms {
+            MonsterEncounter::THREE_SENTRIES,
+            MonsterEncounter::GREMLIN_NOB,
+        };
+        {
+            DeckVariant v {relicDeck, 40, false, eliteRooms, 0, 0,
+                           {{RelicId::PRESERVED_INSECT, "preserved_insect"},
+                            {RelicId::SLING_OF_COURAGE, "sling_of_courage"},
+                            {RelicId::SLAVERS_COLLAR,   "slavers_collar"}},
+                           pinnedPotions, 20};
+            v.room = Room::ELITE;
+            relicVariants.push_back(v);
+        }
+        {
+            // ⚠ SLING_OF_COURAGE rides along here even though its gate is ELITE-only, and
+            //   that is measured, not decorative: with it only in @relic20, "wrote the sling's
+            //   gate as ELITE || BOSS" was a 0-example mutation — there was no BOSS-room trace
+            //   carrying it to disagree. With it here, the FALSE side of its gate has evidence.
+            // ⚠ 50/80 and not 60/80: heal is clamped, and at 60 both `heal(25)` and `heal(24)`
+            //   land on 80, so the AMOUNT had no evidence (measured: 0 examples). At 50 the
+            //   full 25 fits under the cap and the number itself is pinned.
+            DeckVariant v {relicDeck, 40, false, champOnly, 0, 0,
+                           {{RelicId::PANTOGRAPH,       "pantograph"},
+                            {RelicId::SLAVERS_COLLAR,   "slavers_collar"},
+                            {RelicId::SLING_OF_COURAGE, "sling_of_courage"}},
+                           pinnedPotions, 21};
+            v.room = Room::BOSS;
+            v.playerHpValue = 50;
+            relicVariants.push_back(v);
+        }
+        {
+            DeckVariant v {relicDeck, 40, false, champOnly, 0, 0,
+                           {{RelicId::ANCIENT_TEA_SET, "ancient_tea_set"}},
+                           pinnedPotions, 22};
+            v.lastRoom = Room::REST;
+            relicVariants.push_back(v);
+        }
+
         // ⚠⚠ THE 21 SINGLE-SITE RELICS THAT ARE **NOT** REGISTERED, and why (batch 43 screened
         // all 70 single-site relics; 11 were already done, 38 are above, these 21 are out):
         //   * needs orbs (no orb model anywhere): CRACKED_CORE, NUCLEAR_BATTERY,
@@ -3735,12 +3847,11 @@ int main() {
         //     DU_VU_DOLL (`buff<STRENGTH>(r.data)`), GIRYA (same).~~ ✅ RETIRED BY BATCH 49 --
         //     batch 44 gave RelicSpec a `data` field and the engine a {id, data} relic list,
         //     so both are registered now, in @relic18 / @relic19 above.
-        //   * reads `gc.curRoom` / `gc.lastRoom`, which this harness never sets (both stay
-        //     Room::INVALID), so the branch is structurally unreachable: PANTOGRAPH (BOSS),
-        //     PRESERVED_INSECT (ELITE), SLAVERS_COLLAR (ELITE|BOSS), SLING_OF_COURAGE (ELITE),
-        //     ANCIENT_TEA_SET (lastRoom == REST). ⚠ CLOSING CONDITION: a `Room` field on
-        //     DeckVariant (same default-preserves-bytes trick as `ascension`) plus a `room`
-        //     field in the trace header would open all five at once.
+        //   * ~~reads `gc.curRoom` / `gc.lastRoom`, which this harness never sets...~~
+        //     ✅ RETIRED BY BATCH 50 — the closing condition this entry named (a `Room` field on
+        //     DeckVariant plus a `room` key in the trace header) was built, and all five
+        //     (PANTOGRAPH, PRESERVED_INSECT, SLAVERS_COLLAR, SLING_OF_COURAGE, ANCIENT_TEA_SET)
+        //     are registered in @relic20 / @relic21 / @relic22 above.
         //   * conjures a card from the WHOLE POOL, which can be an unregistered card and would
         //     make the trace unreplayable: ENCHIRIDION, DEAD_BRANCH, NILRYS_CODEX (the last one
         //     also opens a CARD_SELECT screen).
@@ -4713,6 +4824,15 @@ int main() {
                 // the GameContext constructor left behind.
                 gc.potionRng = Random(sd.value);
 
+                // Batch 50. Both default to Room::INVALID, which is what the GameContext
+                // constructor leaves them at and what every committed trace was generated
+                // with, so assigning them unconditionally is still a no-op for old variants.
+                gc.curRoom = variant.room;
+                gc.lastRoom = variant.lastRoom;
+                if (variant.playerHpValue != 0) {
+                    gc.curHp = variant.playerHpValue;
+                }
+
                 // Two relics per trace, rotating, so every trace exercises a pair — unless
                 // the variant names its own loadout, in which case it gets exactly that.
                 // ⚠ `traceIdx` is advanced identically either way (see `++traceIdx` below),
@@ -4864,6 +4984,13 @@ int main() {
                 // so every asc-0 line stays byte-identical.
                 if (gc.curHp != gc.maxHp) {
                     std::cout << "," << q("playerHp") << ":" << gc.curHp;
+                }
+                // Emitted only when set — same trick again, so every committed line is untouched.
+                if (variant.room != Room::INVALID) {
+                    std::cout << "," << q("room") << ":" << q(roomName(variant.room));
+                }
+                if (variant.lastRoom != Room::INVALID) {
+                    std::cout << "," << q("lastRoom") << ":" << q(roomName(variant.lastRoom));
                 }
                 std::cout << "," << q("character") << ":" << q("ironclad")
                           << "," << q("potionRngSeed") << ":" << q(std::to_string(sd.value))
