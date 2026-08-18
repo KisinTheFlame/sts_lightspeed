@@ -4264,6 +4264,53 @@ int main() {
     };
 
     std::vector<DeckVariant> eventVariants;
+    {
+        // Same inert pins as batches 46 / 47: VAJRA's entire combat implementation is one
+        // `player.buff<PS::STRENGTH>(1)` in initRelics with no second call site in src/combat,
+        // and both potions are pure player-side. Nothing in this product goes near a monster
+        // hook, which is what "inert" has to mean here.
+        const std::vector<RelicSpec> PINNED_RELICS {{RelicId::VAJRA, "vajra"}};
+        const std::vector<Potion> PINNED_POTIONS {Potion::BLOCK_POTION, Potion::STRENGTH_POTION};
+
+        // Variant 48: all six encounters on the standard 22-card act-2/3 deck
+        // (BATCH_1 + SPOT_WEAKNESS, un-upgraded, 40 seeds, ascension 0, target policy 0).
+        //
+        // ⚠ MEASURED, NOT ASSUMED -- the eleventh time this file picks a deck by measurement.
+        // The candidate it was measured against is batch 37's 45-card upgradeAll deck (the one
+        // 47b used for the Spire pair), 120 traces per encounter per deck:
+        //
+        //   encounter                 avg turns A / B   thinnest move exec A / B   SW played A / B
+        //   TWO_FUNGI_BEASTS             1.71 / 1.76           94 /  108              42 / 109
+        //   MUSHROOMS_EVENT              2.80 / 2.52          217 /  225              57 / 126
+        //   COLOSSEUM_EVENT_SLAVERS      3.91 / 3.32           62 /   53              71 / 159
+        //   LAGAVULIN_EVENT              4.22 / 3.87          213 /  192              78 / 158
+        //   COLOSSEUM_EVENT_NOBS         4.84 / 3.92          120 /  120              89 / 168
+        //   MYSTERIOUS_SPHERE_EVENT      3.52 / 4.44          415 /  403              73 / 201
+        //
+        // A is longer on five of six (a weaker deck buys monster turns, the same effect 47b's
+        // Heart deck was built around), every move of every monster executes 62-498 times under
+        // it, and the 45-card deck buys nothing on any column while roughly doubling the bytes.
+        // The one column B leads on -- ORB_WALKER, the only act-3 monsters here -- it leads by
+        // 403 vs 415 and 505 vs 498, i.e. not at all.
+        //
+        // ⚠ THE ONE SPOT_WEAKNESS IS LOAD-BEARING, standing rule since batch 24: Monster::
+        // isAttacking() -> isMoveAttack is read by nothing else in the whole reference. It is
+        // worth MORE here than in a normal batch -- the act-1 monsters in these encounters
+        // (FUNGI_BEAST, LAGAVULIN, GREMLIN_NOB) were registered in batches 16-18, whose
+        // encounters run under the act-1 product's variant 0 whose deck has no Spot Weakness,
+        // so their attack classification has never had an oracle at all. 42-89 plays per
+        // encounter here, measured, is that oracle.
+        //
+        // ⚠ FINGERPRINT: byte-identical to variants 24-29 / 32-33 (same deck, same ascension,
+        // same target policy). Safe for the usual and only reason -- no other variant anywhere
+        // names any of these six encounters, so no file ever holds rows from two variants.
+        std::vector<CardId> eventDeck = BATCH_1;
+        eventDeck.push_back(CardId::SPOT_WEAKNESS);
+        // Empty `encounters` means ALL SIX in this product, which is what we want here: unlike
+        // the act-2/act-3 products this one is not going to grow batch by batch -- 63 / 63 is
+        // the end of the encounter line.
+        eventVariants.push_back({eventDeck, 40, false, {}, 0, 0, PINNED_RELICS, PINNED_POTIONS});
+    }
 
     for (const auto &v : variants) {
         // 10 starter cards are added by the GameContext constructor.
