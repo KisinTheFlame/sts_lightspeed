@@ -3683,14 +3683,58 @@ int main() {
                                  {{RelicId::NEOWS_LAMENT, "neows_lament", 1}},
                                  barkPotions, 17});
 
+        // ---- relic sets 18 / 19: the two `buff<STRENGTH>(r.data)` relics, SPLIT APART ------
+        //
+        //   DU_VU_DOLL   :268-270   p.buff<PS::STRENGTH>(r.data);
+        //   GIRYA        :280-282   p.buff<PS::STRENGTH>(r.data);      <- byte-identical body
+        //   DAMARU       :260-262 (init, SYNCHRONOUS) + Player.cpp:513 (turn start, addToBot)
+        //   EMOTION_CHIP Player.cpp:518-520 -- AN EMPTY IF (`// todo ...`)
+        //
+        // ⚠⚠ THIS RETIRES A STALE EXCLUSION. Batch 43's screening put DU_VU_DOLL and GIRYA in
+        //   the "out" list below with the reason "reads r.data, which the engine's bc.relics
+        //   does not carry, and whose value from this harness is 0 -> no observable surface".
+        //   BATCH 44 KILLED BOTH HALVES of that: RelicSpec grew a `data` field (NEOWS_LAMENT
+        //   and PEN_NIB already ride it) and the engine's BattleContext.relics became
+        //   {id, data}. Hand them non-zero data and the case stops being a no-op.
+        //
+        // ⚠⚠ WHY TWO VARIANTS AND NOT ONE. The two bodies are byte-identical, so a single
+        //   variant carrying both would only ever show their SUM, and "which relic contributed
+        //   how much" would be exactly the kind of blind spot @relic13's Kunai/Shuriken split
+        //   was opened for. Same deck, same encounter, same potions, different relicSet: the
+        //   only difference between the two files is which relic is on the list and what its
+        //   data says (3 vs 2), so the opening STRENGTH reads 3 in one file and 2 in the other.
+        //
+        // ⚠ CHAMP for the length: Damaru's second site fires once per player turn, so the
+        //   mantra count in the snapshot is a direct read of "did you copy BOTH sites" — with
+        //   a short fight the two sites are hard to tell apart (1 layer vs 2 in a 2-turn fight).
+        //   Measured on this deck: CHAMP averages ~9 player turns, so MANTRA climbs to ~9.
+        //
+        // ⚠ EMOTION_CHIP rides along in set 18 at zero cost. Its evidence is NEGATIVE and that
+        //   is the point: the reference does nothing, so any effect we might invent shows up as
+        //   a diff on all 120 traces. It is the Curiosity family, not the Specimen family --
+        //   the reference ANSWERS here (with "nothing"), it does not hang.
+        const std::vector<MonsterEncounter> champOnly {
+            MonsterEncounter::CHAMP,
+        };
+        relicVariants.push_back({relicDeck, 40, false, champOnly, 0, 0,
+                                 {{RelicId::DU_VU_DOLL,   "du_vu_doll", 3},
+                                  {RelicId::DAMARU,       "damaru"},
+                                  {RelicId::EMOTION_CHIP, "emotion_chip"}},
+                                 pinnedPotions, 18});
+        relicVariants.push_back({relicDeck, 40, false, champOnly, 0, 0,
+                                 {{RelicId::GIRYA, "girya", 2}},
+                                 pinnedPotions, 19});
+
         // ⚠⚠ THE 21 SINGLE-SITE RELICS THAT ARE **NOT** REGISTERED, and why (batch 43 screened
         // all 70 single-site relics; 11 were already done, 38 are above, these 21 are out):
         //   * needs orbs (no orb model anywhere): CRACKED_CORE, NUCLEAR_BATTERY,
         //     SYMBIOTIC_VIRUS, RUNIC_CAPACITOR, FROZEN_CORE.
         //   * needs a Stance (not modelled, and not in the snapshot): TEARDROP_LOCKET.
-        //   * reads `r.data`, which the engine's `bc.relics` does not carry, and whose value
+        //   * ~~reads `r.data`, which the engine's `bc.relics` does not carry, and whose value
         //     from this harness is 0 -> the case is a NO-OP with no observable surface:
-        //     DU_VU_DOLL (`buff<STRENGTH>(r.data)`), GIRYA (same).
+        //     DU_VU_DOLL (`buff<STRENGTH>(r.data)`), GIRYA (same).~~ ✅ RETIRED BY BATCH 49 --
+        //     batch 44 gave RelicSpec a `data` field and the engine a {id, data} relic list,
+        //     so both are registered now, in @relic18 / @relic19 above.
         //   * reads `gc.curRoom` / `gc.lastRoom`, which this harness never sets (both stay
         //     Room::INVALID), so the branch is structurally unreachable: PANTOGRAPH (BOSS),
         //     PRESERVED_INSECT (ELITE), SLAVERS_COLLAR (ELITE|BOSS), SLING_OF_COURAGE (ELITE),
