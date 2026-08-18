@@ -4244,6 +4244,27 @@ int main() {
                                 PINNED_RELICS, PINNED_POTIONS});
     }
 
+    // ---- batch 48: the last six encounters ------------------------------------------
+    //
+    // TWO_FUNGI_BEASTS (act 1's strong pool) plus the five remaining *_EVENT encounters.
+    // Between them they take the encounter column to 63 / 63 -- and NOT ONE NEW MONSTER:
+    // every one of these is built out of monsters already in MOVE_RULES, which is exactly
+    // why this batch is cheap.
+    //
+    // A product of its own for the usual traceIdx reason, and -- like the potion, act-3
+    // ascension, act-3 target and act-4 products -- every variant in it pins both relics and
+    // potions, so it reads no traceIdx and neither freezes nor is frozen by anything.
+    const std::vector<std::pair<MonsterEncounter, const char *>> eventEncounters {
+        {MonsterEncounter::TWO_FUNGI_BEASTS,        "TWO_FUNGI_BEASTS"},
+        {MonsterEncounter::LAGAVULIN_EVENT,         "LAGAVULIN_EVENT"},
+        {MonsterEncounter::COLOSSEUM_EVENT_SLAVERS, "COLOSSEUM_EVENT_SLAVERS"},
+        {MonsterEncounter::COLOSSEUM_EVENT_NOBS,    "COLOSSEUM_EVENT_NOBS"},
+        {MonsterEncounter::MUSHROOMS_EVENT,         "MUSHROOMS_EVENT"},
+        {MonsterEncounter::MYSTERIOUS_SPHERE_EVENT, "MYSTERIOUS_SPHERE_EVENT"},
+    };
+
+    std::vector<DeckVariant> eventVariants;
+
     for (const auto &v : variants) {
         // 10 starter cards are added by the GameContext constructor.
         if (static_cast<int>(v.extra.size()) + 10 > Deck::MAX_SIZE) {
@@ -4519,6 +4540,40 @@ int main() {
         for (auto cid : v.extra) {
             if (!isReplayableCard(cid) || isPoolConjuringCard(cid)) {
                 std::cerr << "act4 variant deck holds a card Havoc must not be able to auto-play: "
+                          << getCardEnumName(cid) << std::endl;
+                return 1;
+            }
+        }
+    }
+    for (const auto &v : eventVariants) {
+        if (static_cast<int>(v.extra.size()) + 10 > Deck::MAX_SIZE) {
+            std::cerr << "event deck variant exceeds Deck::MAX_SIZE (" << Deck::MAX_SIZE
+                      << "): " << (v.extra.size() + 10) << " cards" << std::endl;
+            return 1;
+        }
+        if (v.relics.size() > 8) {
+            std::cerr << "event variant names more than 8 relics" << std::endl;
+            return 1;
+        }
+        if (v.relics.empty() || v.potions.empty()) {
+            std::cerr << "event variant must pin BOTH its relics and its potions" << std::endl;
+            return 1;
+        }
+        for (const auto &rs : v.relics) {
+            if (!relicDataIsNumeric(rs.id) && rs.data == 0) {
+                std::cerr << "event variant hands out " << rs.name << " with data 0" << std::endl;
+                return 1;
+            }
+        }
+        for (auto p : v.potions) {
+            if (!isReplayablePotion(p, v.potionSet != 0)) {
+                std::cerr << "event variant pins a potion the replayer does not know" << std::endl;
+                return 1;
+            }
+        }
+        for (auto cid : v.extra) {
+            if (!isReplayableCard(cid) || isPoolConjuringCard(cid)) {
+                std::cerr << "event variant deck holds a card Havoc must not be able to auto-play: "
                           << getCardEnumName(cid) << std::endl;
                 return 1;
             }
@@ -4848,6 +4903,12 @@ int main() {
     emitProduct(act3TgtVariants, act3TgtEncounters);
     // ⚠ Batch 47b, same reasoning, same proof run.
     emitProduct(act4Variants, act4Encounters);
+    // ⚠ Batch 48, same reasoning, same proof run: every variant here pins both relics and
+    // potions, so it reads no traceIdx and freezes nothing ahead of it. Adding this call with
+    // `eventVariants` still empty is a no-op, and that was proved rather than assumed:
+    // tools/regen-traces.sh --check reproduced all 208 committed files byte-for-byte before
+    // the first event variant was filled in.
+    emitProduct(eventVariants, eventEncounters);
 
     std::cout << "]}" << std::endl;
     return 0;
