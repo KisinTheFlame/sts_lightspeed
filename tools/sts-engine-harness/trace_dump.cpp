@@ -4418,6 +4418,71 @@ int main() {
         {MonsterEncounter::MYSTERIOUS_SPHERE_EVENT, "MYSTERIOUS_SPHERE_EVENT"},
     };
 
+    // ---- batch 52: act 4 + masked bandits at ascension 19 ----------------------------
+    //
+    // The six monsters batch 47b introduced are the last ones whose ascension tiers had no
+    // oracle: their second HP range sat in a comment and `ascCalibrated` was unset. This
+    // product is what lets the engine fill both in.
+    //
+    // ⚠ THREE THRESHOLD FAMILIES COEXIST HERE, which is why one product covers all three
+    //   encounters but the engine side had to be filled per monster:
+    //     SPIRE_SHIELD / SPIRE_SPEAR  -> `asc >= 8`  (elite family)
+    //     CORRUPT_HEART               -> `asc >= 9`  (boss family)
+    //     BEAR / POINTY / ROMEO       -> `asc >= 7`  (ordinary family)
+    //   asc 19 lights up the high side of all three at once, exactly as batches 21/30/46 did.
+    //
+    // ⚠⚠ BEAR IS A COUNTEREXAMPLE WORTH KNOWING: `{{38,52},{40,44}}` — the high tier NARROWS
+    //   the range (min 38->40 but max 52->44) instead of raising it. "Ascension only makes
+    //   monsters tougher" is false on HP, and the engine's data-table test had to be taught
+    //   this by name rather than by rule.
+    //
+    // ⚠ Decks are batch 47b's, unchanged, so the comparison against the committed asc-0 files
+    //   is one axis only. Relics and potions pinned as always, so this product freezes nothing.
+    const std::vector<std::pair<MonsterEncounter, const char *>> act4AscEncounters {
+        {MonsterEncounter::SHIELD_AND_SPEAR,     "SHIELD_AND_SPEAR"},
+        {MonsterEncounter::THE_HEART,            "THE_HEART"},
+        {MonsterEncounter::MASKED_BANDITS_EVENT, "MASKED_BANDITS_EVENT"},
+    };
+
+    std::vector<DeckVariant> act4AscVariants;
+    {
+        const std::vector<RelicSpec> PINNED_RELICS {{RelicId::VAJRA, "vajra"}};
+        const std::vector<Potion> PINNED_POTIONS {Potion::BLOCK_POTION, Potion::STRENGTH_POTION};
+
+        std::vector<CardId> spireDeck19 = BATCH_1;
+        spireDeck19.push_back(CardId::SPOT_WEAKNESS);
+        for (CardId c : {CardId::SPOT_WEAKNESS, CardId::SPOT_WEAKNESS, CardId::SPOT_WEAKNESS,
+                         CardId::LIMIT_BREAK, CardId::LIMIT_BREAK,
+                         CardId::SWORD_BOOMERANG, CardId::SWORD_BOOMERANG,
+                         CardId::GHOSTLY_ARMOR, CardId::GHOSTLY_ARMOR,
+                         CardId::GHOSTLY_ARMOR, CardId::GHOSTLY_ARMOR,
+                         CardId::GOOD_INSTINCTS, CardId::GOOD_INSTINCTS,
+                         CardId::IMPERVIOUS, CardId::IMPERVIOUS,
+                         CardId::IMPERVIOUS, CardId::IMPERVIOUS,
+                         CardId::REAPER, CardId::REAPER,
+                         CardId::FINESSE, CardId::FINESSE,
+                         CardId::FLASH_OF_STEEL, CardId::FLASH_OF_STEEL}) {
+            spireDeck19.push_back(c);
+        }
+        const std::vector<MonsterEncounter> spireAndBandits19 {
+            MonsterEncounter::SHIELD_AND_SPEAR,
+            MonsterEncounter::MASKED_BANDITS_EVENT,
+        };
+        act4AscVariants.push_back({spireDeck19, 40, true, spireAndBandits19, 19, 0,
+                                   PINNED_RELICS, PINNED_POTIONS});
+
+        std::vector<CardId> heartDeck19;
+        for (int i = 0; i < 10; ++i) heartDeck19.push_back(CardId::IMPERVIOUS);
+        for (int i = 0; i < 8; ++i) heartDeck19.push_back(CardId::GHOSTLY_ARMOR);
+        for (int i = 0; i < 4; ++i) heartDeck19.push_back(CardId::SHRUG_IT_OFF);
+        for (int i = 0; i < 4; ++i) heartDeck19.push_back(CardId::BANDAGE_UP);
+        for (int i = 0; i < 2; ++i) heartDeck19.push_back(CardId::METALLICIZE);
+        for (int i = 0; i < 2; ++i) heartDeck19.push_back(CardId::SPOT_WEAKNESS);
+        const std::vector<MonsterEncounter> heartOnly19 {MonsterEncounter::THE_HEART};
+        act4AscVariants.push_back({heartDeck19, 40, true, heartOnly19, 19, 0,
+                                   PINNED_RELICS, PINNED_POTIONS});
+    }
+
     std::vector<DeckVariant> eventVariants;
     {
         // Same inert pins as batches 46 / 47: VAJRA's entire combat implementation is one
@@ -4745,6 +4810,12 @@ int main() {
                           << getCardEnumName(cid) << std::endl;
                 return 1;
             }
+        }
+    }
+    for (const auto &v : act4AscVariants) {
+        if (v.relics.empty() || v.potions.empty()) {
+            std::cerr << "act4-asc variant must pin BOTH its relics and its potions" << std::endl;
+            return 1;
         }
     }
     for (const auto &v : eventVariants) {
@@ -5127,6 +5198,9 @@ int main() {
     // tools/regen-traces.sh --check reproduced all 208 committed files byte-for-byte before
     // the first event variant was filled in.
     emitProduct(eventVariants, eventEncounters);
+    // ⚠ Batch 52, same reasoning as every product since 45: both relics and potions pinned,
+    // so it reads no traceIdx and freezes nothing ahead of it.
+    emitProduct(act4AscVariants, act4AscEncounters);
 
     std::cout << "]}" << std::endl;
     return 0;
